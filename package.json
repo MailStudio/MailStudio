@@ -1,6 +1,6 @@
 {
   "name": "outlook-orbit",
-  "version": "0.9.0",
+  "version": "1.0.0",
   "description": "Secure Outlook web wrapper with tray notifications, calendar, tasks, and Asana.",
   "main": "src/main/main.js",
   "scripts": {
