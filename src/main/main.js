@@ -21,7 +21,8 @@ const updater = require('./updater')
 const IS_GLASS_MODE = process.platform === 'darwin' && parseInt(os.release().split('.')[0], 10) >= 26
 
 const APP_NAME = 'MailStudio'
-const SESSION_PARTITION = 'persist:mailstudio'
+const MICROSOFT_SESSION_PARTITION = 'persist:mailstudio'
+const ASANA_SESSION_PARTITION = 'persist:mailstudio-asana'
 const WINDOW_SIZE = { width: 1280, height: 860, minWidth: 720, minHeight: 480 }
 const SIDEBAR = { expanded: 280, rail: 76 }
 const TOPBAR_HEIGHT = 46
@@ -341,8 +342,8 @@ function isMicrosoftLoginHost(host) {
 }
 
 // Once one Microsoft tab is authenticated, eagerly load the other VISIBLE
-// built-in Microsoft tabs in the background. They share the session partition,
-// so Microsoft's silent SSO signs them all in without a second prompt. Hidden
+// built-in Microsoft tabs in the background. They share the Microsoft session
+// partition, so silent SSO signs them all in without a second prompt. Hidden
 // Office-suite tabs are left lazy — they'll SSO silently whenever first opened.
 function prewarmMicrosoftServices() {
   if (servicesPrewarmed) return
@@ -984,10 +985,6 @@ function getTrayIconPath(unread) {
   return path.join(__dirname, '..', '..', 'assets', unread > 0 ? 'trayUnreadTemplate.png' : 'trayTemplate.png')
 }
 
-function getSharedSession() {
-  return session.fromPartition(SESSION_PARTITION)
-}
-
 /* ---------- Menus ---------- */
 function buildAppMenu() {
   // ⌘1–9 jump straight to the Nth visible tab.
@@ -1073,12 +1070,18 @@ function buildAppMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
-// Built-in MS/Asana services share one session (so Microsoft SSO carries
-// across Outlook/Teams/Calendar/To Do). Each custom pinned site gets its OWN
-// partition so an untrusted third-party site can't share cookies or storage
-// with your trusted Microsoft/Asana surfaces.
+// Microsoft services share one session so SSO carries across Outlook, Teams,
+// Calendar, To Do, and Office. Asana is connected in the product, but it does
+// not need Microsoft cookies, so it gets its own built-in partition. Each
+// custom pinned site gets its own partition as well.
 function partitionFor(service) {
-  return service.builtin ? SESSION_PARTITION : `persist:mailstudio-site-${service.key}`
+  if (!service.builtin) return `persist:mailstudio-site-${service.key}`
+  if (service.key === 'asana') return ASANA_SESSION_PARTITION
+  return MICROSOFT_SESSION_PARTITION
+}
+
+function partitionForProvider(provider) {
+  return provider === 'asana' ? ASANA_SESSION_PARTITION : MICROSOFT_SESSION_PARTITION
 }
 
 function configurePartition(partitionName) {
@@ -1108,7 +1111,8 @@ function configurePartition(partitionName) {
 }
 
 function configureSession() {
-  configurePartition(SESSION_PARTITION)
+  configurePartition(MICROSOFT_SESSION_PARTITION)
+  configurePartition(ASANA_SESSION_PARTITION)
 }
 
 /* ---------- Service views ---------- */
@@ -1270,7 +1274,13 @@ function createServiceView(service) {
         action: 'allow',
         overrideBrowserWindowOptions: {
           autoHideMenuBar: true,
-          webPreferences: { partition: partitionFor(service), sandbox: true, contextIsolation: true }
+          webPreferences: {
+            partition: partitionFor(service),
+            sandbox: true,
+            contextIsolation: true,
+            nodeIntegration: false,
+            webSecurity: true
+          }
         }
       }
     }
@@ -2627,8 +2637,8 @@ function showGlobalSnoozeMenu() {
 }
 
 /* ---------- Lifecycle ---------- */
-// Only one instance may run: a second process would fight over the shared
-// session partition, corrupting the File System LOCK and spamming the
+// Only one instance may run: a second process would fight over persistent
+// browser session partitions, corrupting the File System LOCK and spamming the
 // quota/sandbox-DB errors. A second launch just surfaces the existing window.
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 if (!gotSingleInstanceLock) {
@@ -2669,7 +2679,7 @@ app.whenReady().then(() => {
   // refresh failures) push a fresh snapshot so the account rail stays live.
   connections.init({
     config: settings.connections,
-    partition: SESSION_PARTITION,
+    partitionForProvider,
     onChange: () => pushSnapshot()
   })
 

@@ -34,7 +34,7 @@ let config = {
   asana: { clientId: '' }
 }
 let onChange = () => {}
-let partition = 'persist:mailstudio'
+let partitionForProvider = () => 'persist:mailstudio'
 
 function setStatus(provider, status, extra) {
   state[provider] = { ...state[provider], status, ...(extra || {}) }
@@ -63,9 +63,9 @@ function normalizeConfig(raw) {
 // Restore connection state from the encrypted vault on launch: a stored token
 // means we start "connected" (optimistically) and let the first refresh/feed
 // call correct us to 'error' if the grant was revoked.
-function init({ config: cfg, partition: part, onChange: cb }) {
+function init({ config: cfg, partitionForProvider: partitionResolver, onChange: cb }) {
   config = normalizeConfig(cfg)
-  if (typeof part === 'string') partition = part
+  if (typeof partitionResolver === 'function') partitionForProvider = partitionResolver
   if (typeof cb === 'function') onChange = cb
 
   for (const provider of Object.keys(state)) {
@@ -145,7 +145,7 @@ async function connect(provider, { parentWindow } = {}) {
       provider,
       clientId: config[provider].clientId,
       tenant: provider === 'microsoft' ? config.microsoft.tenant : undefined,
-      partition,
+      partition: partitionForProvider(provider),
       parentWindow
     })
     const account = await loadAccount(provider, tokenSet)

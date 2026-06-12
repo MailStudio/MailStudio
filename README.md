@@ -160,12 +160,14 @@ to encrypt tokens with the OS keychain before writing them to disk. If encryptio
 is unavailable (rare), tokens are kept in memory for the session only and discarded
 on quit. Tokens refresh automatically; sign in once and stay signed in.
 
-### Session isolation for custom sites
+### Session isolation
 
-Built-in Microsoft and Asana services share one persistent session — that's how SSO
-works. Every **custom pinned site** you add gets its own isolated session partition.
-An untrusted pinned site cannot read cookies, storage, or credentials from your
-Microsoft or Asana surfaces. Period.
+Microsoft services share one persistent session — that's how one Microsoft sign-in
+unlocks Outlook, Teams, Calendar, To Do, Office, OneDrive, Planner, and
+SharePoint. Asana does not need Microsoft SSO, so it runs in its own built-in
+session partition. Every **custom pinned site** you add gets its own isolated
+session partition too. An untrusted pinned site cannot read cookies, storage, or
+credentials from your Microsoft or Asana surfaces. Period.
 
 ### Collapsible sidebar — two modes
 
@@ -250,7 +252,8 @@ Microsoft surfaces alongside potentially untrusted custom pins.
   teams.microsoft.com, asana.com, etc.) — suffix-matched, not prefix
 - All navigation checked against the allowlist; trusted Microsoft/Asana links
   route to their owning tab in-app, unknown hosts open in the default browser
-- Custom pins isolated in per-site session partitions
+- Microsoft services share one Microsoft SSO partition; Asana has its own
+  partition; custom pins are isolated per site
 - `file://` and `javascript:` navigation blocked; only `http://`, `https://`, and
   `mailto:` may open externally
 - Panel and menu renderer windows hardened against navigation and `window.open`

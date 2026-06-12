@@ -26,7 +26,9 @@ time, fixes for confirmed issues are prioritized over all other work.
 
 - The app never transmits your data anywhere except Microsoft, Asana, and
   GitHub (update checks) — see the Privacy section of the README.
-- Custom pinned sites run in isolated session partitions by design; reports
-  about a pinned site reading *its own* partition are not vulnerabilities.
+- Microsoft services share one Microsoft SSO partition. Asana runs in a separate
+  built-in partition, and custom pinned sites run in isolated per-site
+  partitions by design; reports about a site reading *its own* partition are not
+  vulnerabilities.
 - The DOM-scraper fallback parses untrusted page content; escaping bugs in how
   scraped text reaches the sidebar UI are in scope and very welcome.
