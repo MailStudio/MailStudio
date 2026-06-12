@@ -11,7 +11,7 @@ require.cache[electronPath] = {
   id: electronPath,
   filename: electronPath,
   loaded: true,
-  exports: { app: { getPath: () => '/tmp/outlook-orbit-test' } }
+  exports: { app: { getPath: () => '/tmp/mailstudio-test' } }
 }
 
 const store = require('../src/main/settings-store')

@@ -155,7 +155,7 @@ const DEFAULTS = {
 }
 
 function filePath() {
-  return path.join(app.getPath('userData'), 'orbit-settings.json')
+  return path.join(app.getPath('userData'), 'mailstudio-settings.json')
 }
 
 function clone(value) {

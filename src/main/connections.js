@@ -34,7 +34,7 @@ let config = {
   asana: { clientId: '' }
 }
 let onChange = () => {}
-let partition = 'persist:outlook-orbit'
+let partition = 'persist:mailstudio'
 
 function setStatus(provider, status, extra) {
   state[provider] = { ...state[provider], status, ...(extra || {}) }

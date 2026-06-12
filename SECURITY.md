@@ -1,6 +1,6 @@
 # Security Policy
 
-Outlook Orbit stores OAuth tokens for your Microsoft and Asana accounts
+MailStudio stores OAuth tokens for your Microsoft and Asana accounts
 (encrypted via the OS keychain through Electron's `safeStorage`) and renders
 your mailbox inside embedded web views, so we take security reports seriously.
 

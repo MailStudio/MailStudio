@@ -1,12 +1,12 @@
-# Outlook Orbit
+# MailStudio
 
 **Outlook and Teams, finally in one place.**
 
-> Outlook Orbit is an **unofficial** client and is not affiliated with or
+> MailStudio is an **unofficial** client and is not affiliated with or
 > endorsed by Microsoft or Asana. Outlook and Teams are trademarks of Microsoft
 > Corporation; Asana is a trademark of Asana, Inc.
 
-Outlook Orbit is a secure Electron wrapper for the Microsoft 365 web apps you
+MailStudio is a secure Electron wrapper for the Microsoft 365 web apps you
 actually live in: Outlook, Teams, Calendar, To Do, Office, OneDrive, SharePoint,
 and Asana. It keeps them warm in one persistent workspace, adds native desktop
 notifications, routes Microsoft and Asana links back into the right tab, and
@@ -40,10 +40,10 @@ Version `1.0.0` is available from [GitHub Releases](https://github.com/MailStudi
 
 | Platform | File |
 |---|---|
-| macOS Apple Silicon | `Outlook-Orbit-1.0.0-arm64.dmg` |
-| macOS Intel | `Outlook-Orbit-1.0.0.dmg` |
-| Windows x64 | `Outlook-Orbit-Setup-1.0.0.exe` |
-| Windows ARM64 | `Outlook-Orbit-Setup-1.0.0-arm64.exe` |
+| macOS Apple Silicon | `MailStudio-1.0.0-arm64.dmg` |
+| macOS Intel | `MailStudio-1.0.0.dmg` |
+| Windows x64 | `MailStudio-Setup-1.0.0.exe` |
+| Windows ARM64 | `MailStudio-Setup-1.0.0-arm64.exe` |
 
 Packaged builds check GitHub Releases for updates on launch and then every six
 hours. macOS builds are ad-hoc signed but not notarized yet, so see
@@ -55,7 +55,7 @@ Gatekeeper flow.
 ## Why it exists
 
 Microsoft's web apps are excellent. The browser experience of _using_ them is not.
-Outlook Orbit wraps everything in a dedicated desktop application that:
+MailStudio wraps everything in a dedicated desktop application that:
 
 - Keeps every surface warm and logged in at all times
 - Delivers native desktop notifications the moment mail or tasks arrive
@@ -88,7 +88,7 @@ authenticated.
 
 ### Smart link routing — Microsoft and Asana links stay in the app
 
-Click any Microsoft or Asana link, anywhere in Orbit — an email, a Teams chat,
+Click any Microsoft or Asana link, anywhere in MailStudio — an email, a Teams chat,
 a sidebar feed item, a notification — and it opens **in the tab that owns it**,
 not in your default browser:
 
@@ -155,7 +155,7 @@ feature is independently toggleable:
 
 ### Token security — OS keychain sandboxing
 
-Credentials never touch disk in plaintext. Orbit uses Electron's `safeStorage` API
+Credentials never touch disk in plaintext. MailStudio uses Electron's `safeStorage` API
 to encrypt tokens with the OS keychain before writing them to disk. If encryption
 is unavailable (rare), tokens are kept in memory for the session only and discarded
 on quit. Tokens refresh automatically; sign in once and stay signed in.
@@ -241,7 +241,7 @@ quick-access menu; right-click for native controls.
 
 ## Security model
 
-Orbit was built with the assumption that it's wrapping trusted-but-complex
+MailStudio was built with the assumption that it's wrapping trusted-but-complex
 Microsoft surfaces alongside potentially untrusted custom pins.
 
 - `contextIsolation: true`, `sandbox: true`, `nodeIntegration: false` on every
@@ -277,7 +277,7 @@ To report a vulnerability privately, see [SECURITY.md](SECURITY.md).
 
 ## API setup — BYO credentials
 
-Because Orbit is open source, no API keys are baked in. Each person supplies their
+Because MailStudio is open source, no API keys are baked in. Each person supplies their
 own free OAuth app registrations (a one-time ~5-minute setup). You paste the
 client IDs into **Connect accounts → Developer setup** inside the app — no code
 editing. The app uses OAuth2 authorization-code + **PKCE**, which means no client
@@ -286,15 +286,15 @@ secret is ever needed or stored.
 ### Microsoft (Mail + Calendar)
 
 1. [Azure Portal](https://portal.azure.com) → **App registrations** → **New registration**
-2. Name it (e.g. "Outlook Orbit"); set supported account types to fit your setup
-3. **Redirect URI**: platform _Mobile and desktop applications_ → `http://localhost/orbit-auth`
+2. Name it (e.g. "MailStudio"); set supported account types to fit your setup
+3. **Redirect URI**: platform _Mobile and desktop applications_ → `http://localhost/mailstudio-auth`
 4. **API permissions** → Microsoft Graph → Delegated → `Mail.Read`, `Calendars.Read`, `offline_access`, `User.Read`
 5. Copy the **Application (client) ID** → paste it into the app under **Microsoft → Developer setup**
 
 ### Asana (Tasks)
 
 1. [Asana → My apps](https://app.asana.com/0/my-apps) → **Create new app**
-2. Add OAuth redirect URL: `http://localhost/orbit-auth`
+2. Add OAuth redirect URL: `http://localhost/mailstudio-auth`
 3. Copy the **Client ID** → paste it into the app under **Asana → Developer setup**
 
 After setup, one Microsoft sign-in authenticates the entire Microsoft suite. One
@@ -323,7 +323,7 @@ request via [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ### Cross-platform builds
 
-Outlook Orbit builds for macOS, Windows, and Linux:
+MailStudio builds for macOS, Windows, and Linux:
 
 | Platform | Output | Notes |
 |---|---|---|
@@ -364,18 +364,18 @@ platform only.)
 The build is code-signed but not notarized. On first launch macOS will block it.
 
 **Option A — System Settings (macOS 13+):**
-1. Drag **Outlook Orbit** to `/Applications` and double-click (it will be blocked)
+1. Drag **MailStudio** to `/Applications` and double-click (it will be blocked)
 2. Open **System Settings → Privacy & Security** → **Open Anyway**
 3. Launch again and confirm — remembered after that
 
 **Option B — Terminal:**
 ```bash
-xattr -dr com.apple.quarantine "/Applications/Outlook Orbit.app"
+xattr -dr com.apple.quarantine "/Applications/MailStudio.app"
 ```
 
 ### Signing in to Microsoft
 
-Microsoft may prompt for a passkey or security key. Inside Orbit:
+Microsoft may prompt for a passkey or security key. Inside MailStudio:
 
 - **Touch ID / platform passkey**: not supported — Chromium requires Apple's
   restricted browser entitlement, which is only granted to notarized browsers
@@ -416,7 +416,7 @@ assets/
 
 ## Status & feedback
 
-Outlook Orbit is in **beta**. It works, it's used daily, and it will also have
+MailStudio is in **beta**. It works, it's used daily, and it will also have
 rough edges — Microsoft and Asana ship UI changes that can break the scraper
 fallback (the API paths are immune), and notarization is still on the roadmap.
 If something breaks or you have an idea, please open an issue. Feedback of any

@@ -18,10 +18,10 @@ exports.default = async function afterPack(context) {
   const frameworksPath = path.join(appContentsPath, 'Frameworks')
 
   const helperNames = [
-    'Outlook Orbit Helper',
-    'Outlook Orbit Helper (GPU)',
-    'Outlook Orbit Helper (Plugin)',
-    'Outlook Orbit Helper (Renderer)'
+    'MailStudio Helper',
+    'MailStudio Helper (GPU)',
+    'MailStudio Helper (Plugin)',
+    'MailStudio Helper (Renderer)'
   ]
 
   for (const helperName of helperNames) {
@@ -51,7 +51,7 @@ exports.default = async function afterPack(context) {
   execFileSync('codesign', ['--remove-signature', appBundlePath], { stdio: 'inherit' })
   execFileSync(
     'codesign',
-    ['--force', '--deep', '--sign', '-', '--identifier', 'com.openai.outlookorbit', appBundlePath],
+    ['--force', '--deep', '--sign', '-', '--identifier', 'com.mailstudio.mailstudio', appBundlePath],
     { stdio: 'inherit' }
   )
   execFileSync('codesign', ['--verify', '--deep', '--strict', appBundlePath], { stdio: 'inherit' })

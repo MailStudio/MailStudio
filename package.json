@@ -1,5 +1,5 @@
 {
-  "name": "outlook-orbit",
+  "name": "mailstudio",
   "version": "1.0.0",
   "description": "Secure Outlook web wrapper with tray notifications, calendar, tasks, and Asana.",
   "main": "src/main/main.js",
@@ -38,8 +38,8 @@
     "electron-builder": "^26.15.2"
   },
   "build": {
-    "appId": "com.mailstudio.outlookorbit",
-    "productName": "Outlook Orbit",
+    "appId": "com.mailstudio.mailstudio",
+    "productName": "MailStudio",
     "afterPack": "scripts/after-pack.js",
     "files": [
       "src/**/*",
@@ -85,8 +85,8 @@
       "identity": null,
       "gatekeeperAssess": false,
       "extendInfo": {
-        "NSBluetoothAlwaysUsageDescription": "Outlook Orbit uses Bluetooth to communicate with hardware security keys when signing in.",
-        "NSBluetoothPeripheralUsageDescription": "Outlook Orbit uses Bluetooth to communicate with hardware security keys when signing in."
+        "NSBluetoothAlwaysUsageDescription": "MailStudio uses Bluetooth to communicate with hardware security keys when signing in.",
+        "NSBluetoothPeripheralUsageDescription": "MailStudio uses Bluetooth to communicate with hardware security keys when signing in."
       }
     }
   }

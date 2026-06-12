@@ -20,8 +20,8 @@ const updater = require('./updater')
 // Glass vibrancy instead of a solid window background.
 const IS_GLASS_MODE = process.platform === 'darwin' && parseInt(os.release().split('.')[0], 10) >= 26
 
-const APP_NAME = 'Outlook Orbit'
-const SESSION_PARTITION = 'persist:outlook-orbit'
+const APP_NAME = 'MailStudio'
+const SESSION_PARTITION = 'persist:mailstudio'
 const WINDOW_SIZE = { width: 1280, height: 860, minWidth: 720, minHeight: 480 }
 const SIDEBAR = { expanded: 280, rail: 76 }
 const TOPBAR_HEIGHT = 46
@@ -51,7 +51,7 @@ function getAppUserAgent() {
     appUserAgent = session.defaultSession
       .getUserAgent()
       .replace(/\sElectron\/\S+/i, '')
-      .replace(/\s(outlook-orbit|OutlookOrbit|Outlook Orbit)\/\S+/i, '')
+      .replace(/\s(mailstudio|MailStudio|MailStudio)\/\S+/i, '')
       .replace(/\s{2,}/g, ' ')
   }
   return appUserAgent
@@ -1002,7 +1002,7 @@ function buildAppMenu() {
     {
       label: APP_NAME,
       submenu: [
-        { label: 'Open Outlook Orbit', click: () => togglePanelWindow(true) },
+        { label: 'Open MailStudio', click: () => togglePanelWindow(true) },
         { label: 'Check for Updates…', click: () => updater.check() },
         { type: 'separator' },
         { role: 'quit' }
@@ -1078,7 +1078,7 @@ function buildAppMenu() {
 // partition so an untrusted third-party site can't share cookies or storage
 // with your trusted Microsoft/Asana surfaces.
 function partitionFor(service) {
-  return service.builtin ? SESSION_PARTITION : `persist:orbit-site-${service.key}`
+  return service.builtin ? SESSION_PARTITION : `persist:mailstudio-site-${service.key}`
 }
 
 function configurePartition(partitionName) {
@@ -1968,7 +1968,7 @@ function createTray() {
 function buildTrayContextMenu() {
   const unread = mailUnread()
   return Menu.buildFromTemplate([
-    { label: 'Open Outlook Orbit', click: () => togglePanelWindow(true) },
+    { label: 'Open MailStudio', click: () => togglePanelWindow(true) },
     { label: 'Menu Panel', click: () => toggleMenuWindow(true) },
     { type: 'separator' },
     ...visibleServices().map((service) => ({
@@ -1985,7 +1985,7 @@ function buildTrayContextMenu() {
     { type: 'separator' },
     { label: unread > 0 ? `${unread} unread` : 'Inbox caught up', enabled: false },
     { label: 'Report an Issue…', click: () => openExternalSafe(`${REPO_URL}/issues/new?template=bug_report.yml`) },
-    { label: 'Quit Outlook Orbit', click: () => { app.isQuitting = true; app.quit() } }
+    { label: 'Quit MailStudio', click: () => { app.isQuitting = true; app.quit() } }
   ])
 }
 
@@ -2647,7 +2647,7 @@ app.whenReady().then(() => {
   if (!gotSingleInstanceLock) return
   app.setName(APP_NAME)
   if (typeof app.setAppUserModelId === 'function') {
-    app.setAppUserModelId('com.mailstudio.outlookorbit')
+    app.setAppUserModelId('com.mailstudio.mailstudio')
   }
   // Keep the Dock icon visible so the unread count shows as a Dock badge
   // (macOS "app notification number"). The app still lives in the menu bar too.

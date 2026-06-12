@@ -327,7 +327,7 @@ function renderSettings(snapshot) {
       dragIndex = index
       row.classList.add('dragging')
       e.dataTransfer.effectAllowed = 'move'
-      e.dataTransfer.setData('application/x-orbit-row', String(index))
+      e.dataTransfer.setData('application/x-mailstudio-row', String(index))
     })
     row.addEventListener('dragend', () => {
       dragIndex = null
@@ -335,13 +335,13 @@ function renderSettings(snapshot) {
       document.querySelectorAll('.set-item.drag-over').forEach((el) => el.classList.remove('drag-over'))
     })
     row.addEventListener('dragover', (e) => {
-      if (!e.dataTransfer.types.includes('application/x-orbit-row')) return
+      if (!e.dataTransfer.types.includes('application/x-mailstudio-row')) return
       e.preventDefault()
       if (dragIndex !== null && dragIndex !== index) row.classList.add('drag-over')
     })
     row.addEventListener('dragleave', () => row.classList.remove('drag-over'))
     row.addEventListener('drop', (e) => {
-      if (!e.dataTransfer.types.includes('application/x-orbit-row')) return
+      if (!e.dataTransfer.types.includes('application/x-mailstudio-row')) return
       e.preventDefault()
       row.classList.remove('drag-over')
       if (dragIndex === null || dragIndex === index) return
@@ -1174,10 +1174,10 @@ paintFocus()
 const toolsDrawer = document.getElementById('tools-drawer')
 const toolsTab = document.getElementById('tools-tab')
 if (toolsTab && toolsDrawer) {
-  if (localStorage.getItem('orbit-tools-open')) toolsDrawer.classList.add('open')
+  if (localStorage.getItem('mailstudio-tools-open')) toolsDrawer.classList.add('open')
   toolsTab.addEventListener('click', () => {
     const open = toolsDrawer.classList.toggle('open')
-    localStorage.setItem('orbit-tools-open', open ? '1' : '')
+    localStorage.setItem('mailstudio-tools-open', open ? '1' : '')
   })
 }
 

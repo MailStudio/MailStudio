@@ -13,7 +13,7 @@ const { BrowserWindow, session } = require('electron')
 // Shared, app-wide redirect target. Registered identically in the Azure app
 // ("Mobile and desktop applications" platform) and the Asana app. The popup
 // never actually loads it; we read the ?code= off the navigation and stop it.
-const REDIRECT_URI = 'http://localhost/orbit-auth'
+const REDIRECT_URI = 'http://localhost/mailstudio-auth'
 
 // Typed failure from the token endpoint, so callers can tell a definitive
 // grant death (e.g. invalid_grant) apart from a transient network/server blip.

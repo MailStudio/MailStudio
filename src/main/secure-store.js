@@ -13,7 +13,7 @@ const { app, safeStorage } = require('electron')
 // where a tokenSet is { accessToken, refreshToken, expiresAt, scope, account }.
 
 function vaultPath() {
-  return path.join(app.getPath('userData'), 'orbit-credentials.bin')
+  return path.join(app.getPath('userData'), 'mailstudio-credentials.bin')
 }
 
 function encryptionAvailable() {
