@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Outlook Orbit</title>
+    <link rel="stylesheet" href="./panel.css" />
+  </head>
+  <body>
+    <!-- Full-width window chrome -->
+    <header class="topbar" id="topbar">
+      <div class="topbar-left">
+        <button class="tool collapse" id="toggle-sidebar" title="Toggle sidebar" aria-label="Toggle sidebar">
+          <svg viewBox="0 0 24 24" class="icon"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16"/></svg>
+        </button>
+        <span class="divider"></span>
+        <div class="nav-group">
+          <button class="tool" data-command="go-home" id="go-home" title="Home (pinned page)">
+            <svg viewBox="0 0 24 24" class="icon"><path d="M4 11l8-7 8 7M6 9.5V20h12V9.5" /></svg>
+          </button>
+          <button class="tool" data-command="nav-back" id="nav-back" title="Back">
+            <svg viewBox="0 0 24 24" class="icon"><path d="M15 6l-6 6 6 6" /></svg>
+          </button>
+          <button class="tool" data-command="nav-forward" id="nav-forward" title="Forward">
+            <svg viewBox="0 0 24 24" class="icon"><path d="M9 6l6 6-6 6" /></svg>
+          </button>
+          <button class="tool" data-command="nav-reload" title="Reload">
+            <svg viewBox="0 0 24 24" class="icon"><path d="M20 11a8 8 0 1 0-.6 4M20 5v6h-6" /></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="topbar-right">
+        <button class="tool split-orient" id="split-orient" title="Split layout" aria-label="Toggle split orientation" disabled>
+          <svg viewBox="0 0 24 24" class="icon"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="M12 5v14"/></svg>
+        </button>
+        <button class="tool snooze-btn" id="global-snooze" data-command="global-snooze-menu" title="Snooze all notifications & sound" aria-label="Snooze all notifications">
+          <svg viewBox="0 0 24 24" class="icon"><path d="M4 8h6l-6 8h6"/><path d="M14 4h5l-5 6h5"/></svg>
+        </button>
+        <div class="search" id="search">
+          <button class="tool search-btn" id="search-toggle" title="Find in page (⌘F)" aria-label="Find in page">
+            <svg viewBox="0 0 24 24" class="icon"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg>
+          </button>
+          <input class="search-input" id="search-input" type="text" placeholder="Find in page…" autocomplete="off" spellcheck="false" tabindex="-1" />
+          <span class="search-count" id="search-count"></span>
+          <button class="tool search-close" id="search-close" title="Close (Esc)" tabindex="-1">
+            <svg viewBox="0 0 24 24" class="icon"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+        <button class="tool" data-command="open-external" title="Open in browser" aria-label="Open in browser">
+          <svg viewBox="0 0 24 24" class="icon"><path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4" /></svg>
+        </button>
+        <button class="tool theme-toggle" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme"></button>
+      </div>
+    </header>
+
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-scroll">
+        <!-- Compose quick-actions -->
+        <div class="compose-label">Create a new</div>
+        <div class="compose-bar" id="compose-bar">
+          <button class="compose-btn" data-compose="mail" title="New email (⌘N)">
+            <svg viewBox="0 0 24 24" class="icon"><path d="M4 6h16v12H4zM4 7l8 6 8-6"/><path d="M18 3v5M15.5 5.5h5" /></svg>
+            <span>Email</span>
+          </button>
+          <button class="compose-btn" data-compose="calendar" title="New event (⌘⇧E)">
+            <svg viewBox="0 0 24 24" class="icon"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 9.5h16M8 3v3M16 3v3M12 12v5M9.5 14.5h5"/></svg>
+            <span>Event</span>
+          </button>
+          <button class="compose-btn" data-compose="todo" title="New task (⌘⇧T)">
+            <svg viewBox="0 0 24 24" class="icon"><path d="M9 6h11M9 12h7M9 18h11"/><path d="M4 6.2l1.1 1.1L7 5.4M4 12.2l1.1 1.1L7 11.4"/><path d="M16.5 16.5v5M14 19h5"/></svg>
+            <span>Task</span>
+          </button>
+          <button class="compose-refresh-btn" id="refresh-mail-btn" title="Refresh feeds">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11A8 8 0 1 0 18.3 17"/><polyline points="20 6 20 11 15 11"/></svg>
+          </button>
+        </div>
+
+        <!-- Lightweight nudge to connect API notifications (hidden once set up) -->
+        <div class="notif-setup" id="notif-setup" hidden>
+          <button class="notif-setup-main" id="notif-setup-main" title="Connect Mail, Calendar & Asana for notifications">
+            <span class="notif-setup-icon">
+              <svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+            </span>
+            <span class="notif-setup-text">Set up notifications</span>
+          </button>
+          <button class="notif-setup-skip" id="notif-setup-skip" title="Skip for now">Skip</button>
+        </div>
+
+        <!-- Aggregate unread summary across feeds -->
+        <button class="summary-strip" id="summary-strip" title="Jump to inbox" hidden></button>
+
+        <!-- Default: the service list + live feeds -->
+        <nav class="service-list" id="service-list"></nav>
+
+        <!-- Settings: swapped in here, inside the sidebar. Paged: a root list
+             of categories, each opening its own sub-page. -->
+        <div class="sidebar-settings" id="sidebar-settings">
+          <div class="set-head">
+            <button class="set-back" id="set-back" title="Back" hidden>
+              <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>
+            </button>
+            <span class="set-head-title" id="set-head-title">Settings</span>
+            <button class="set-done" data-command="close-settings">Done</button>
+          </div>
+
+          <!-- Root: category list -->
+          <div class="set-page" id="set-page-root">
+            <button class="set-nav-row" data-goto="connections">
+              <span class="set-nav-ic"><svg viewBox="0 0 24 24"><path d="M9 7H7a5 5 0 0 0 0 10h2M15 7h2a5 5 0 0 1 0 10h-2M8 12h8"/></svg></span>
+              <span class="set-nav-text"><strong>Connections</strong><small>Microsoft &amp; Asana accounts</small></span>
+              <span class="set-nav-ch"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
+            </button>
+            <button class="set-nav-row" data-goto="notifications">
+              <span class="set-nav-ic"><svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></span>
+              <span class="set-nav-text"><strong>Notifications</strong><small>Per-service alerts</small></span>
+              <span class="set-nav-ch"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
+            </button>
+            <button class="set-nav-row" data-goto="tasks">
+              <span class="set-nav-ic"><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6.2l1.1 1.1L7 5.4M4 17.2l1.1 1.1L7 16.4"/></svg></span>
+              <span class="set-nav-text"><strong>Tasks</strong><small>Where “New task” creates tasks</small></span>
+              <span class="set-nav-ch"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
+            </button>
+            <button class="set-nav-row" data-goto="quiet">
+              <span class="set-nav-ic"><svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></span>
+              <span class="set-nav-text"><strong>Quiet hours</strong><small>Silence within a time range</small></span>
+              <span class="set-nav-ch"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
+            </button>
+            <button class="set-nav-row" data-goto="sidebar">
+              <span class="set-nav-ic"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16"/></svg></span>
+              <span class="set-nav-text"><strong>Sidebar items</strong><small>Show, reorder &amp; pin sites</small></span>
+              <span class="set-nav-ch"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
+            </button>
+            <button class="set-nav-row" data-goto="appearance">
+              <span class="set-nav-ic"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M3 9h18"/></svg></span>
+              <span class="set-nav-text"><strong>Sidebar behavior</strong><small>What collapsing does</small></span>
+              <span class="set-nav-ch"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
+            </button>
+          </div>
+
+          <!-- Connections page -->
+          <div class="set-page" id="set-page-connections" hidden>
+            <p class="set-hint">Connect Microsoft (Mail &amp; Calendar) and Asana for live feeds and notifications — recent unread mail and upcoming events fill in automatically. Sign in once — tokens are stored in your OS keychain.</p>
+            <div class="conn-cards" id="set-conn-cards"></div>
+            <p class="onboard-foot" id="set-encwarn" hidden>⚠︎ OS encryption is unavailable, so tokens won't persist after you quit.</p>
+          </div>
+
+          <!-- Notifications page -->
+          <div class="set-page" id="set-page-notifications" hidden>
+            <p class="set-hint">Choose which connected services may notify you. Nothing fires until you finish setup.</p>
+            <div class="set-notif-rows">
+              <label class="set-notif-row" data-notif-provider="microsoft">
+                <span class="set-notif-label">
+                  <strong>Mail</strong>
+                  <small data-notif-sub="mail">New email alerts</small>
+                </span>
+                <button class="set-switch" id="notif-mail" data-notif="mail" type="button"></button>
+              </label>
+              <label class="set-notif-row" data-notif-provider="microsoft">
+                <span class="set-notif-label">
+                  <strong>Calendar</strong>
+                  <small data-notif-sub="calendar">Reminders before events start</small>
+                </span>
+                <button class="set-switch" id="notif-calendar" data-notif="calendar" type="button"></button>
+              </label>
+              <label class="set-notif-row" data-notif-provider="asana">
+                <span class="set-notif-label">
+                  <strong>Asana</strong>
+                  <small data-notif-sub="asana">Newly assigned tasks</small>
+                </span>
+                <button class="set-switch" id="notif-asana" data-notif="asana" type="button"></button>
+              </label>
+              <label class="set-notif-row" data-notif-provider="teams">
+                <span class="set-notif-label">
+                  <strong>Teams</strong>
+                  <small data-notif-sub="teams">New message alerts</small>
+                </span>
+                <button class="set-switch" id="notif-teams" data-notif="teams" type="button"></button>
+              </label>
+              <label class="set-notif-row set-notif-divider">
+                <span class="set-notif-label">
+                  <strong>Show preview</strong>
+                  <small>Include email snippet in alert</small>
+                </span>
+                <button class="set-switch" id="notif-preview" data-notif="preview" type="button"></button>
+              </label>
+            </div>
+            <div class="set-notif-warn" id="notif-arm-warn" hidden>
+              <span>Notifications are not armed yet.</span>
+              <button id="notif-arm-btn" type="button">Enable now</button>
+            </div>
+            <button class="set-link-row" data-goto="connections">
+              <span>Manage connections</span>
+              <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
+            </button>
+          </div>
+
+          <!-- Tasks page -->
+          <div class="set-page" id="set-page-tasks" hidden>
+            <p class="set-hint">Where the New Task button (⌘⇧T) creates tasks.</p>
+            <label class="set-radio">
+              <input type="radio" name="taskProvider" value="microsoft" />
+              <span><strong>Microsoft To Do</strong><small>Opens the To Do tab.</small></span>
+            </label>
+            <label class="set-radio">
+              <input type="radio" name="taskProvider" value="asana" />
+              <span><strong>Asana</strong><small>Opens Asana's create-task dialog.</small></span>
+            </label>
+          </div>
+
+          <!-- Quiet hours page -->
+          <div class="set-page" id="set-page-quiet" hidden>
+            <p class="set-hint">Silence all notifications between these times. Spans midnight if the end is before the start.</p>
+            <div class="quiet-row">
+              <input id="quiet-start" class="set-input quiet-time" type="time" />
+              <span class="quiet-to">to</span>
+              <input id="quiet-end" class="set-input quiet-time" type="time" />
+            </div>
+          </div>
+
+          <!-- Sidebar items page -->
+          <div class="set-page" id="set-page-sidebar" hidden>
+            <p class="set-hint">Show/hide, drag to reorder, or remove pinned sites.</p>
+            <div class="set-items" id="set-items"></div>
+            <div class="set-subhead">Add a pinned site</div>
+            <div class="add-row">
+              <input id="add-name" class="set-input" type="text" placeholder="Name (e.g. Notion)" />
+              <input id="add-url" class="set-input" type="text" placeholder="https://example.com" />
+              <button id="add-site" class="set-btn">Add pinned site</button>
+            </div>
+            <div class="set-error" id="add-error"></div>
+          </div>
+
+          <!-- Appearance / sidebar behavior page -->
+          <div class="set-page" id="set-page-appearance" hidden>
+            <p class="set-hint">What happens when the sidebar is collapsed.</p>
+            <label class="set-radio">
+              <input type="radio" name="collapseMode" value="vanish" />
+              <span><strong>Vanish completely</strong><small>Disappears; reopen from the top bar.</small></span>
+            </label>
+            <label class="set-radio">
+              <input type="radio" name="collapseMode" value="rail" />
+              <span><strong>Icon rail</strong><small>Collapses to a thin strip of icons.</small></span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Productivity tools drawer: focus timer + scratch pad -->
+      <div class="tools-drawer" id="tools-drawer">
+      <button class="tools-tab" id="tools-tab" title="Focus timer &amp; Scratch pad">
+        <span class="tools-tab-grip"></span>
+        <span class="tools-tab-label">Focus &amp; Notes</span>
+        <svg viewBox="0 0 24 24" class="icon tools-tab-chevron" id="tools-tab-chevron"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <div class="tools" id="tools">
+        <div class="focus" id="focus">
+          <div class="focus-ring-wrap">
+            <svg class="focus-ring" viewBox="0 0 44 44">
+              <circle class="focus-track" cx="22" cy="22" r="19" />
+              <circle class="focus-prog" id="focus-prog" cx="22" cy="22" r="19" />
+            </svg>
+            <span class="focus-time" id="focus-time">25:00</span>
+          </div>
+          <div class="focus-controls">
+            <span class="focus-label" id="focus-label">Focus</span>
+            <div class="focus-btns">
+              <button class="focus-btn" id="focus-toggle" title="Start / pause">
+                <svg viewBox="0 0 24 24" class="icon" id="focus-toggle-icon"><path d="M8 5v14l11-7z"/></svg>
+              </button>
+              <button class="focus-btn" id="focus-reset" title="Reset">
+                <svg viewBox="0 0 24 24" class="icon"><path d="M20 11a8 8 0 1 0-.6 4M20 5v6h-6"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <button class="scratch-toggle" id="scratch-toggle" title="Scratch pad">
+          <svg viewBox="0 0 24 24" class="icon"><path d="M4 5h16M4 10h16M4 15h10"/><path d="M14.5 19l5-5 1.5 1.5-5 5H14.5z"/></svg>
+          <span>Scratch pad</span>
+          <svg viewBox="0 0 24 24" class="icon chevron" id="scratch-chevron"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <textarea class="scratch-area" id="scratch-area" placeholder="Quick notes, links, anything…" hidden></textarea>
+      </div>
+      </div><!-- /tools-drawer -->
+
+      <div class="footer">
+        <button class="tool wide" id="open-settings" data-command="open-settings" title="Settings">
+          <svg viewBox="0 0 24 24" class="icon"><circle cx="12" cy="12" r="3" /><path d="M12 2.5v2M12 19.5v2M21.5 12h-2M4.5 12h-2M18.4 5.6l-1.4 1.4M7 17l-1.4 1.4M18.4 18.4 17 17M7 7 5.6 5.6" /></svg>
+          <span class="tool-label">Settings</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Split view: draggable divider sits in the gutter between the two panes -->
+    <div class="split-divider" id="split-divider" hidden><span class="split-grip"></span></div>
+    <!-- Live preview shown while dragging the divider (real web views are detached) -->
+    <div class="split-ghost" id="split-ghost" hidden>
+      <div class="split-ghost-pane" id="split-ghost-a"></div>
+      <div class="split-ghost-bar" id="split-ghost-bar"></div>
+      <div class="split-ghost-pane" id="split-ghost-b"></div>
+    </div>
+
+    <!-- First-boot welcome / Microsoft sign-in -->
+    <div class="welcome" id="welcome">
+      <div class="welcome-card">
+        <div class="welcome-mark">
+          <svg viewBox="0 0 24 24"><rect x="3" y="3" width="8.4" height="8.4" rx="1"/><rect x="12.6" y="3" width="8.4" height="8.4" rx="1"/><rect x="3" y="12.6" width="8.4" height="8.4" rx="1"/><rect x="12.6" y="12.6" width="8.4" height="8.4" rx="1"/></svg>
+        </div>
+        <h1 class="welcome-title">Welcome to Outlook Orbit</h1>
+        <p class="welcome-sub">Sign in to Outlook just like you would in a browser — Mail, Calendar, Teams and To Do in one window. One sign-in carries across every Microsoft surface. API notifications are optional: they power richer notifications but need a free Azure/Asana app registration.</p>
+        <button class="welcome-btn primary" id="welcome-signin">
+          <svg viewBox="0 0 24 24" class="ms-logo"><rect x="3" y="3" width="8.4" height="8.4"/><rect x="12.6" y="3" width="8.4" height="8.4"/><rect x="3" y="12.6" width="8.4" height="8.4"/><rect x="12.6" y="12.6" width="8.4" height="8.4"/></svg>
+          Sign in to Outlook
+        </button>
+        <button class="welcome-btn secondary" id="welcome-advanced">Set up API notifications (advanced)</button>
+        <button class="welcome-btn ghost" id="welcome-skip">Skip for now</button>
+      </div>
+    </div>
+
+    <!-- Onboarding / Connections sheet -->
+    <div class="onboard-overlay" id="onboard-overlay" hidden>
+      <div class="onboard">
+        <button class="onboard-close" id="onboard-close" title="Close" aria-label="Close">
+          <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+        <h2 class="onboard-title">Connect your accounts</h2>
+        <p class="onboard-sub">Notifications stay silent until you connect at least one account. Sign in once — tokens are stored in your OS keychain and refresh automatically. Connecting also fills your sidebar feeds with recent unread mail and upcoming calendar events, no setup needed.</p>
+        <p class="onboard-sub">This needs your own (free) Azure / Asana app registration — about 5 minutes. See the README setup guide.</p>
+
+        <div class="conn-cards" id="conn-cards"></div>
+
+        <div class="onboard-actions">
+          <button class="onboard-btn ghost" id="onboard-later">Maybe later</button>
+          <button class="onboard-btn primary" id="onboard-finish">Enable notifications</button>
+        </div>
+        <p class="onboard-foot" id="onboard-encwarn" hidden>⚠︎ OS encryption is unavailable, so tokens won't persist after you quit.</p>
+      </div>
+    </div>
+
+    <script src="./panel.js"></script>
+  </body>
+</html>

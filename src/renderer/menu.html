@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Outlook Orbit Menu</title>
+    <link rel="stylesheet" href="./menu.css" />
+  </head>
+  <body>
+    <div class="card" id="card">
+      <header class="m-head">
+        <div class="m-eyebrow">OUTLOOK ORBIT</div>
+        <div class="m-status" id="status">
+          <span class="m-status-icon" id="status-icon"></span>
+          <span class="m-status-copy">
+            <span class="m-status-num" id="status-num">—</span>
+            <span class="m-status-text" id="status-text">Loading…</span>
+          </span>
+        </div>
+      </header>
+
+      <button class="m-primary" data-command="open-app">
+        <svg viewBox="0 0 24 24" class="icon"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M4 7l8 6 8-6"/></svg>
+        <span>Open Outlook Orbit</span>
+      </button>
+
+      <div class="m-label">Workspaces</div>
+      <nav class="m-services" id="services"></nav>
+
+      <div class="m-actions">
+        <button class="m-action" data-command="nav-reload">
+          <svg viewBox="0 0 24 24" class="icon"><path d="M20 11a8 8 0 1 0-.6 4M20 5v6h-6"/></svg>
+          <span>Reload</span>
+        </button>
+        <button class="m-action" data-command="open-external">
+          <svg viewBox="0 0 24 24" class="icon"><path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></svg>
+          <span>Browser</span>
+        </button>
+      </div>
+
+      <footer class="m-foot">
+        <span class="m-foot-name">Outlook Orbit</span>
+        <button class="m-quit" data-command="quit">Quit</button>
+      </footer>
+    </div>
+
+    <script src="./menu.js"></script>
+  </body>
+</html>

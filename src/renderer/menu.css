@@ -1,0 +1,343 @@
+:root {
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1c2026;
+  --bg-soft: #22272e;
+  --text: #e9ebee;
+  --muted: #9aa1ab;
+  --muted-dim: #69707b;
+  --hover: rgba(255, 255, 255, 0.07);
+  --selected: rgba(255, 255, 255, 0.10);
+  --line: rgba(255, 255, 255, 0.09);
+  --badge: #e5484d;
+  --shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+  --border: rgba(255, 255, 255, 0.12);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --bg-soft: #f4f5f7;
+  --text: #1b1e23;
+  --muted: #5c636e;
+  --muted-dim: #99a0ab;
+  --hover: rgba(0, 0, 0, 0.05);
+  --selected: rgba(0, 0, 0, 0.075);
+  --line: rgba(0, 0, 0, 0.09);
+  --badge: #e5484d;
+  --shadow: 0 14px 38px rgba(0, 0, 0, 0.22);
+  --border: rgba(0, 0, 0, 0.12);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: transparent;
+  font-family: -apple-system, "SF Pro Text", "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  color: var(--text);
+  overflow: hidden;
+}
+
+/* The window is transparent; this padding gives the drop shadow room. */
+body {
+  padding: 10px;
+}
+
+.card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  padding: 14px;
+  overflow: hidden;
+}
+
+.icon {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ---------- Header / status ---------- */
+.m-eyebrow {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--muted-dim);
+}
+
+.m-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.m-status-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  border-radius: 11px;
+  background: var(--bg-soft);
+  color: var(--text);
+}
+
+.m-status-icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+.m-status-icon.unread {
+  background: var(--bg-soft);
+  color: var(--text);
+}
+
+.m-status-copy {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
+.m-status-num {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.m-status-text {
+  font-size: 12.5px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+/* ---------- Primary button ---------- */
+.m-primary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  width: 100%;
+  height: 40px;
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-soft);
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background 0.14s var(--ease), transform 0.1s var(--ease);
+}
+
+.m-primary:hover {
+  background: var(--hover);
+}
+
+.m-primary:active {
+  transform: scale(0.985);
+}
+
+.m-primary .icon {
+  width: 18px;
+  height: 18px;
+}
+
+/* ---------- Section label ---------- */
+.m-label {
+  margin: 16px 2px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted-dim);
+}
+
+/* ---------- Services ---------- */
+.m-services {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.m-service {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 8px 9px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.13s var(--ease), color 0.13s var(--ease);
+}
+
+.m-service:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.m-service.active {
+  background: var(--selected);
+  color: var(--text);
+}
+
+.m-service-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+}
+
+.m-service-icon svg {
+  width: 19px;
+  height: 19px;
+}
+
+.m-service.active .m-service-icon {
+  color: var(--text);
+}
+
+.m-service-name {
+  flex: 1 1 auto;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.m-service-badge {
+  flex: 0 0 auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--bg-soft);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.m-service-badge.hidden {
+  display: none;
+}
+
+/* ---------- Quick actions ---------- */
+.m-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.m-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.13s var(--ease), color 0.13s var(--ease);
+}
+
+.m-action:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.m-action .icon {
+  width: 16px;
+  height: 16px;
+}
+
+/* ---------- Footer ---------- */
+.m-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.m-foot-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted-dim);
+}
+
+.m-quit {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 5px 9px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.13s var(--ease), color 0.13s var(--ease);
+}
+
+.m-quit:hover {
+  background: var(--hover);
+  color: var(--badge);
+}
+
+/* ============ macOS 26 Liquid Glass ============ */
+
+:root[data-glass][data-theme="dark"] {
+  --bg: rgba(18, 22, 30, 0.28);
+  --bg-soft: rgba(28, 34, 46, 0.45);
+  --line: rgba(255, 255, 255, 0.10);
+  --border: rgba(255, 255, 255, 0.20);
+  --hover: rgba(255, 255, 255, 0.12);
+  --selected: rgba(255, 255, 255, 0.16);
+  --text: #f2f4f7;
+  --muted: #aab2be;
+  --muted-dim: #72798a;
+}
+
+:root[data-glass][data-theme="light"] {
+  --bg: rgba(252, 253, 255, 0.28);
+  --bg-soft: rgba(244, 246, 252, 0.40);
+  --line: rgba(0, 0, 0, 0.07);
+  --border: rgba(255, 255, 255, 0.65);
+  --hover: rgba(0, 0, 0, 0.06);
+  --selected: rgba(0, 0, 0, 0.09);
+}
+
+:root[data-glass] .card {
+  -webkit-backdrop-filter: blur(60px) saturate(180%);
+  backdrop-filter: blur(60px) saturate(180%);
+  background: var(--bg);
+}

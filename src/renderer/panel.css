@@ -1,0 +1,1964 @@
+:root {
+  --sb-expanded: 280px;
+  --sb-rail: 76px;
+  --topbar: 46px;
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --focus-accent: #34c759;
+  --accent: #0f6cbd; /* Outlook blue */
+  --ok: #2faa57;
+  --warn: #d9a000;
+  --err: #e5484d;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #16191e;
+  --chrome: #1b1f25;
+  --bg-elevated: #22272e;
+  --text: #e9ebee;
+  --muted: #9aa1ab;
+  --muted-dim: #69707b;
+  --hover: rgba(255, 255, 255, 0.07);
+  --selected: rgba(255, 255, 255, 0.10);
+  --line: rgba(255, 255, 255, 0.08);
+  --border: rgba(255, 255, 255, 0.12);
+  --badge: #e5484d;
+  --input-bg: #14171c;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f5f7;
+  --chrome: #fbfbfc;
+  --bg-elevated: #ffffff;
+  --text: #1b1e23;
+  --muted: #5c636e;
+  --muted-dim: #99a0ab;
+  --hover: rgba(0, 0, 0, 0.05);
+  --selected: rgba(0, 0, 0, 0.075);
+  --line: rgba(0, 0, 0, 0.10);
+  --border: rgba(0, 0, 0, 0.12);
+  --badge: #e5484d;
+  --input-bg: #ffffff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, "SF Pro Text", "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+/* ---------- Top bar ---------- */
+.topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--topbar);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px 0 88px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--line);
+  -webkit-app-region: drag;
+  z-index: 5;
+}
+
+.topbar-left,
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  -webkit-app-region: no-drag;
+}
+
+.divider {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--line);
+}
+
+.nav-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.14s var(--ease), color 0.14s var(--ease), opacity 0.14s var(--ease);
+}
+
+.tool:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.tool:active {
+  transform: scale(0.93);
+}
+
+.tool:disabled {
+  opacity: 0.3;
+  cursor: default;
+  pointer-events: none;
+}
+
+.tool .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.theme-toggle .icon {
+  width: 19px;
+  height: 19px;
+}
+
+/* Global snooze button: highlighted (Outlook-blue) while notifications are snoozed. */
+.snooze-btn.active {
+  background: var(--accent-soft, rgba(0, 120, 212, 0.16));
+  color: var(--accent, #2f6fed);
+}
+
+.snooze-btn.active:hover {
+  background: var(--accent-soft, rgba(0, 120, 212, 0.24));
+  color: var(--accent, #2f6fed);
+}
+
+.icon {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+body.collapsed:not(.settings-open) .collapse .icon {
+  transform: scaleX(-1);
+}
+
+/* ---------- Sidebar ---------- */
+.sidebar {
+  position: fixed;
+  top: var(--topbar);
+  bottom: 0;
+  left: 0;
+  width: var(--sb-expanded);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border-right: 1px solid var(--line);
+  transition: width 0.22s var(--ease);
+  overflow: hidden;
+  z-index: 4;
+}
+
+body.collapsed.mode-rail:not(.settings-open) .sidebar {
+  width: var(--sb-rail);
+}
+
+body.collapsed.mode-vanish:not(.settings-open) .sidebar {
+  width: 0;
+  border-right: none;
+}
+
+.sidebar-scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px 12px 4px;
+}
+
+.sidebar-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: var(--muted-dim);
+  border-radius: 999px;
+  opacity: 0.5;
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+/* ---------- Service rows ---------- */
+.service-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.svc-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.service {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s var(--ease), color 0.14s var(--ease);
+}
+
+.service:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.service.active {
+  background: var(--selected);
+  color: var(--text);
+}
+
+/* Split view: both panes get an Outlook-blue accent rail on their left edge.
+   The focused pane (the nav/compose target) shows it full-strength; the other
+   pane is dimmed so it's clear which one the toolbar acts on. */
+.service.in-split {
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.service.in-split.split-focus {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.service-split {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.service-split svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linejoin: round;
+}
+
+.service-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+}
+
+.service-icon svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.service.active .service-icon {
+  color: var(--text);
+}
+
+.service-name {
+  flex: 1 1 auto;
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: opacity 0.14s var(--ease);
+}
+
+.service-badge {
+  flex: 0 0 auto;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--bg-soft);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.service-badge.hidden {
+  display: none;
+}
+
+/* ---------- Live feed under a service ---------- */
+.feed {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 2px 0 6px 8px;
+  padding-left: 12px;
+  border-left: 1px solid var(--line);
+}
+
+.feed-item {
+  padding: 5px 8px;
+  border-radius: 7px;
+  cursor: default;
+  transition: background 0.12s var(--ease);
+}
+
+.feed-mail.feed-item,
+.feed-event.feed-item,
+.feed-task.feed-item {
+  cursor: pointer;
+}
+
+.feed-mail.feed-item:hover,
+.feed-event.feed-item:hover,
+.feed-task.feed-item:hover {
+  background: var(--hover);
+}
+
+.feed-mail .feed-sender {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.feed-mail .feed-subject {
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.feed-task .feed-task-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.feed-task .feed-task-name::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 1.5px solid var(--muted-dim);
+  transform: translateY(-1px);
+}
+
+.feed-subtask {
+  font-size: 11.5px;
+  color: var(--muted);
+  padding: 2px 8px 2px 21px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.feed-event .feed-event-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.feed-event .feed-event-time {
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.feed-note {
+  font-size: 11.5px;
+  color: var(--muted-dim);
+  padding: 4px 8px;
+  font-style: italic;
+}
+
+/* Hide labels + feeds when collapsed to the rail */
+body.collapsed.mode-rail:not(.settings-open) .service {
+  justify-content: center;
+  padding: 9px 0;
+  gap: 0;
+}
+
+body.collapsed.mode-rail:not(.settings-open) .service-name {
+  opacity: 0;
+  width: 0;
+  flex: 0;
+}
+
+/* On the icon rail there's no room for the pane glyph; the accent rail on the
+   left edge still marks which icons are in the split. */
+body.collapsed.mode-rail:not(.settings-open) .service-split {
+  display: none;
+}
+
+body.collapsed.mode-rail:not(.settings-open) .feed {
+  display: none;
+}
+
+body.collapsed.mode-rail:not(.settings-open) .service-badge {
+  position: absolute;
+  top: -3px;
+  right: -4px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  font-size: 10px;
+  border: 2px solid var(--bg);
+}
+
+/* ---------- Footer ---------- */
+.footer {
+  flex: 0 0 auto;
+  padding: 8px 12px 12px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tool.wide {
+  width: 100%;
+  height: 38px;
+  justify-content: flex-start;
+  gap: 11px;
+  padding: 0 11px;
+  border-radius: 9px;
+}
+
+body.collapsed.mode-rail:not(.settings-open) .tool.wide {
+  justify-content: center;
+  padding: 0;
+}
+
+.tool-label {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: opacity 0.14s var(--ease);
+}
+
+body.collapsed.mode-rail:not(.settings-open) .tool-label {
+  opacity: 0;
+  width: 0;
+  overflow: hidden;
+}
+
+/* ---------- Settings (rendered inside the sidebar) ---------- */
+.sidebar-settings {
+  display: none;
+}
+
+body.settings-open .service-list {
+  display: none;
+}
+
+body.settings-open .sidebar-settings {
+  display: block;
+}
+
+/* Keep the Settings footer button highlighted while open */
+body.settings-open #open-settings {
+  background: var(--selected);
+  color: var(--text);
+}
+
+.set-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+.set-head-title {
+  font-size: 16px;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+}
+
+.set-done {
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 650;
+  padding: 6px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.14s var(--ease);
+}
+
+.set-done:hover {
+  background: var(--hover);
+}
+
+.set-section {
+  margin-bottom: 24px;
+}
+
+.set-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-dim);
+}
+
+.set-hint {
+  margin: 5px 0 11px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+/* reorderable item rows */
+.set-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.set-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+}
+
+.set-item.hidden-item {
+  opacity: 0.55;
+}
+
+.set-item-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.set-reorder {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 0 0 auto;
+}
+
+.set-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.13s var(--ease), color 0.13s var(--ease), opacity 0.13s;
+}
+
+.set-reorder .set-icon-btn {
+  width: 24px;
+  height: 16px;
+  border: none;
+}
+
+.set-icon-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.set-icon-btn:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.set-icon-btn.danger:hover {
+  color: var(--badge);
+}
+
+.set-icon-btn .icon {
+  width: 15px;
+  height: 15px;
+}
+
+/* visibility switch */
+.set-switch {
+  position: relative;
+  width: 36px;
+  height: 21px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  border: none;
+  background: var(--line);
+  cursor: pointer;
+  transition: background 0.16s var(--ease);
+}
+
+.set-switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.16s var(--ease);
+}
+
+.set-switch.on {
+  background: #34c759;
+}
+
+.set-switch.on::after {
+  transform: translateX(15px);
+}
+
+/* add pinned site — stacked for the narrow sidebar */
+.add-row {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.set-input {
+  width: 100%;
+  height: 36px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  user-select: text;
+}
+
+.set-input:focus {
+  border-color: var(--muted);
+}
+
+.set-btn {
+  width: 100%;
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background 0.14s var(--ease);
+}
+
+.set-btn:hover {
+  background: var(--hover);
+}
+
+.set-error {
+  margin-top: 7px;
+  font-size: 12px;
+  color: var(--badge);
+  min-height: 14px;
+}
+
+/* notification toggle rows */
+.set-notif-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--bg-elevated);
+  margin-top: 10px;
+}
+
+.set-notif-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  cursor: default;
+  gap: 10px;
+}
+
+.set-notif-row + .set-notif-row {
+  border-top: 1px solid var(--line);
+}
+
+.set-notif-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+}
+
+.set-notif-label strong {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.set-notif-label small {
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.3;
+}
+
+/* quiet hours row */
+.quiet-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.quiet-time {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.quiet-to {
+  font-size: 12px;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+/* collapse-mode radios */
+.set-radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 11px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  margin-bottom: 7px;
+  cursor: pointer;
+}
+
+.set-radio input {
+  margin-top: 2px;
+  accent-color: var(--text);
+}
+
+.set-radio span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.set-radio strong {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.set-radio small {
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+/* ============ Compose bar ============ */
+.compose-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-dim);
+  padding: 0 2px;
+  margin-bottom: 7px;
+}
+
+body.collapsed.mode-rail:not(.settings-open) .compose-label,
+body.settings-open .compose-label {
+  display: none;
+}
+
+.compose-bar {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr) auto;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.compose-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 9px 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.14s var(--ease), color 0.14s var(--ease);
+}
+
+.compose-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.compose-btn .icon {
+  width: 18px;
+  height: 18px;
+}
+
+/* Standalone refresh icon button at the end of the compose row. */
+.compose-refresh-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  width: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.14s var(--ease), color 0.14s var(--ease);
+}
+
+.compose-refresh-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.compose-refresh-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.compose-refresh-btn.spinning svg {
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ============ Summary strip ============ */
+.summary-strip {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 11px;
+  margin-bottom: 8px;
+  border: none;
+  border-radius: 9px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s var(--ease);
+}
+
+.summary-strip:hover {
+  background: var(--hover);
+}
+
+.summary-strip[hidden] {
+  display: none;
+}
+
+.summary-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--focus-accent);
+}
+
+.summary-text {
+  color: var(--muted);
+}
+
+.summary-text b {
+  color: var(--text);
+  font-weight: 700;
+}
+
+/* ============ Snooze indicator on tabs ============ */
+.service-snooze {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  color: var(--muted-dim);
+}
+
+.service-snooze svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ============ Tools drawer (focus + scratch pad) ============ */
+.tools-drawer {
+  flex: 0 0 auto;
+}
+
+.tools-tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  height: 27px;
+  padding: 0 12px;
+  border: none;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted-dim);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background 0.14s var(--ease), color 0.14s var(--ease);
+  -webkit-app-region: no-drag;
+}
+
+.tools-tab:focus {
+  outline: none;
+}
+
+.tools-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.tools-tab:hover {
+  background: var(--hover);
+  color: var(--muted);
+}
+
+.tools-tab-grip {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.tools-tab-grip::before,
+.tools-tab-grip::after {
+  content: "";
+  width: 13px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.55;
+  display: block;
+}
+
+.tools-tab-label {
+  flex: 0 0 auto;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.tools-tab .tools-tab-chevron {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  transition: transform 0.2s var(--ease);
+}
+
+.tools-tab .tools-tab-chevron {
+  transform: rotate(180deg);
+}
+
+.tools-drawer.open .tools-tab-chevron {
+  transform: rotate(0deg);
+}
+
+/* ============ Productivity tools (focus + scratch) ============ */
+.tools {
+  overflow: hidden;
+  max-height: 0;
+  transition: max-height 0.26s var(--ease), padding 0.26s var(--ease);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 12px;
+}
+
+.tools-drawer.open .tools {
+  max-height: 400px;
+  padding: 8px 12px;
+}
+
+.focus {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--bg-elevated);
+}
+
+.focus-ring-wrap {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+}
+
+.focus-ring {
+  width: 44px;
+  height: 44px;
+  transform: rotate(-90deg);
+}
+
+.focus-track {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 3;
+}
+
+.focus-prog {
+  fill: none;
+  stroke: var(--focus-accent);
+  stroke-width: 3;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.9s linear;
+}
+
+.focus-time {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.focus-controls {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.focus-label {
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--muted);
+}
+
+.focus.running .focus-label {
+  color: var(--text);
+}
+
+.focus-btns {
+  display: flex;
+  gap: 3px;
+}
+
+.focus-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.13s var(--ease), color 0.13s var(--ease);
+}
+
+.focus-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.focus-btn .icon {
+  width: 16px;
+  height: 16px;
+}
+
+#focus-toggle-icon {
+  fill: currentColor;
+  stroke: none;
+}
+
+.scratch-toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.14s var(--ease), color 0.14s var(--ease);
+}
+
+.scratch-toggle:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.scratch-toggle .icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+
+.scratch-toggle span {
+  flex: 1 1 auto;
+  text-align: left;
+}
+
+.scratch-toggle .chevron {
+  flex: 0 0 auto;
+  transition: transform 0.18s var(--ease);
+}
+
+.scratch-area {
+  width: 100%;
+  min-height: 92px;
+  max-height: 220px;
+  resize: vertical;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.5;
+  outline: none;
+  user-select: text;
+}
+
+.scratch-area:focus {
+  border-color: var(--muted);
+}
+
+.scratch-area[hidden] {
+  display: none;
+}
+
+/* Hide tools + compose labels + summary when collapsed to the rail */
+body.collapsed.mode-rail:not(.settings-open) .compose-bar {
+  grid-template-columns: 1fr;
+}
+
+body.collapsed.mode-rail:not(.settings-open) .compose-refresh-btn {
+  display: none;
+}
+
+body.collapsed.mode-rail:not(.settings-open) .compose-btn span {
+  display: none;
+}
+
+body.collapsed.mode-rail:not(.settings-open) .summary-strip,
+body.collapsed.mode-rail:not(.settings-open) .tools-drawer {
+  display: none;
+}
+
+/* Settings open: hide the compose bar, summary, and tools */
+body.settings-open .compose-bar,
+body.settings-open .summary-strip,
+body.settings-open .tools-drawer {
+  display: none;
+}
+
+/* ============ Drag-to-reorder ============ */
+.set-item {
+  cursor: grab;
+}
+
+.set-item.dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+
+.set-item.drag-over {
+  border-color: var(--focus-accent);
+  box-shadow: 0 -2px 0 var(--focus-accent);
+}
+
+/* ============ First-boot welcome ============ */
+.welcome {
+  position: fixed;
+  inset: var(--topbar) 0 0 0;
+  z-index: 50;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  padding: 24px;
+}
+
+body.first-boot .welcome {
+  display: flex;
+}
+
+/* While the welcome screen is up, the sidebar contents are irrelevant. */
+body.first-boot .sidebar {
+  display: none;
+}
+
+.welcome-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  max-width: 380px;
+}
+
+.welcome-mark {
+  width: 60px;
+  height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 16px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  margin-bottom: 22px;
+}
+
+.welcome-mark svg {
+  width: 30px;
+  height: 30px;
+  fill: var(--text);
+}
+
+.welcome-title {
+  font-size: 22px;
+  font-weight: 760;
+  letter-spacing: -0.02em;
+  margin: 0 0 10px;
+}
+
+.welcome-sub {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--muted);
+  margin: 0 0 26px;
+}
+
+.welcome-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  height: 44px;
+  border-radius: 11px;
+  border: 1px solid var(--border);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background 0.14s var(--ease), opacity 0.14s var(--ease);
+}
+
+.welcome-btn.primary {
+  background: var(--text);
+  color: var(--bg);
+  border-color: var(--text);
+  margin-bottom: 10px;
+}
+
+.welcome-btn.primary:hover {
+  opacity: 0.88;
+}
+
+.welcome-btn.secondary {
+  background: var(--bg-elevated);
+  color: var(--text);
+  margin-bottom: 10px;
+}
+
+.welcome-btn.secondary:hover {
+  background: var(--hover);
+}
+
+.welcome-btn.ghost {
+  background: transparent;
+  color: var(--muted);
+}
+
+.welcome-btn.ghost:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.ms-logo {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+  stroke: none;
+}
+
+/* ============ Inline search ============ */
+.search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+  transition: background 0.16s var(--ease);
+}
+
+.search.open {
+  background: var(--hover);
+}
+
+.search.open .search-btn,
+.search.open .search-btn:hover {
+  background: transparent;
+  color: var(--muted);
+}
+
+.search-input {
+  width: 0;
+  height: 32px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  outline: none;
+  opacity: 0;
+  pointer-events: none;
+  user-select: text;
+  transition: width 0.2s var(--ease), opacity 0.16s var(--ease), padding 0.2s var(--ease);
+}
+
+.search.open .search-input {
+  width: 240px;
+  padding: 0 12px 0 2px;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.search-count {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s var(--ease);
+  min-width: 0;
+  max-width: 0;
+  overflow: hidden;
+}
+
+.search.open .search-count {
+  opacity: 1;
+  max-width: 80px;
+  margin-right: 2px;
+}
+
+.search-count.no-results {
+  color: var(--error, #e05252);
+}
+
+.search-close {
+  opacity: 0;
+  pointer-events: none;
+  width: 0 !important;
+  transition: opacity 0.16s var(--ease), width 0.2s var(--ease);
+  overflow: hidden;
+}
+
+.search.open .search-close {
+  opacity: 1;
+  pointer-events: auto;
+  width: 28px !important;
+}
+
+
+/* ============ macOS 26 Liquid Glass ============ */
+
+:root[data-glass][data-theme="dark"] {
+  --bg: rgba(16, 18, 24, 0.12);
+  --chrome: rgba(10, 12, 18, 0.18);
+  --bg-elevated: rgba(28, 33, 44, 0.60);
+  --input-bg: rgba(8, 10, 16, 0.55);
+  --line: rgba(255, 255, 255, 0.10);
+  --border: rgba(255, 255, 255, 0.20);
+  --hover: rgba(255, 255, 255, 0.12);
+  --selected: rgba(255, 255, 255, 0.17);
+  --text: #f2f4f7;
+  --muted: #aab2be;
+  --muted-dim: #72798a;
+}
+
+:root[data-glass][data-theme="light"] {
+  --bg: rgba(248, 250, 255, 0.10);
+  --chrome: rgba(255, 255, 255, 0.18);
+  --bg-elevated: rgba(255, 255, 255, 0.65);
+  --input-bg: rgba(255, 255, 255, 0.60);
+  --line: rgba(0, 0, 0, 0.07);
+  --border: rgba(255, 255, 255, 0.65);
+  --hover: rgba(0, 0, 0, 0.06);
+  --selected: rgba(0, 0, 0, 0.09);
+}
+
+:root[data-glass] html,
+:root[data-glass] body {
+  background: transparent;
+}
+
+:root[data-glass] .search-results {
+  background: color-mix(in srgb, var(--chrome) 80%, transparent);
+  -webkit-backdrop-filter: blur(60px) saturate(180%);
+  backdrop-filter: blur(60px) saturate(180%);
+}
+
+/* Feed "connect" prompt (shown when a provider is configured but signed out). */
+.feed-connect {
+  margin: 4px 0 2px;
+  padding: 7px 10px;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.14s var(--ease);
+}
+.feed-connect:hover { background: var(--hover); }
+
+/* Feed "retry" button (shown under an error note). */
+.feed-retry {
+  margin: 2px 0;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.14s var(--ease), color 0.14s var(--ease);
+}
+.feed-retry:hover { background: var(--hover); color: var(--text); }
+
+/* ============ Onboarding / Connections sheet ============ */
+.onboard-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.4);
+  -webkit-app-region: no-drag;
+}
+.onboard-overlay[hidden] { display: none; }
+
+.onboard {
+  position: relative;
+  width: min(460px, 92vw);
+  max-height: 86vh;
+  overflow-y: auto;
+  padding: 26px 26px 20px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: var(--chrome);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+
+.onboard-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--muted);
+}
+.onboard-close:hover { background: var(--hover); color: var(--text); }
+.onboard-close svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+
+.onboard-title {
+  font-size: 19px;
+  font-weight: 740;
+  letter-spacing: -0.02em;
+  margin: 0 0 8px;
+}
+.onboard-sub {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--muted);
+  margin: 0 0 18px;
+}
+
+.conn-cards { display: flex; flex-direction: column; gap: 12px; }
+
+.conn-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  background: var(--bg-elevated);
+}
+.conn-card.conn-connected { border-color: color-mix(in srgb, var(--ok) 45%, var(--border)); }
+
+.conn-head { display: flex; align-items: center; gap: 11px; }
+.conn-icon {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--hover);
+  color: var(--accent);
+}
+.conn-icon svg { width: 18px; height: 18px; }
+.conn-card .conn-icon svg { fill: currentColor; stroke: none; }
+/* Asana card icon is stroke-based. */
+.conn-card:last-child .conn-icon svg { fill: none; stroke: currentColor; stroke-width: 2; }
+
+.conn-titles { flex: 1 1 auto; min-width: 0; }
+.conn-name { font-size: 14px; font-weight: 660; }
+.conn-sub { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.conn-state {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--hover);
+  color: var(--muted);
+}
+.conn-state-connected { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.conn-state-connecting { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+.conn-state-error { background: color-mix(in srgb, var(--err) 18%, transparent); color: var(--err); }
+
+.conn-error { margin-top: 10px; font-size: 12px; color: var(--err); }
+.conn-hint { margin-top: 10px; font-size: 11.5px; color: var(--muted-dim); }
+
+.conn-actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+
+.conn-btn {
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 620;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.14s var(--ease), opacity 0.14s var(--ease);
+}
+.conn-btn:hover { background: var(--hover); }
+.conn-btn:disabled { opacity: 0.45; cursor: default; }
+.conn-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.conn-btn.primary:hover { background: var(--accent); opacity: 0.9; }
+.conn-btn.primary:disabled:hover { background: var(--accent); }
+.conn-btn.ghost { color: var(--muted); }
+.conn-btn.link {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 6px;
+  height: auto;
+  font-size: 12px;
+}
+.conn-btn.link:hover { background: transparent; color: var(--text); text-decoration: underline; }
+.conn-btn.small { height: 30px; padding: 0 12px; font-size: 12px; }
+
+.conn-dev {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.conn-dev[hidden] { display: none; }
+
+.conn-field { display: flex; flex-direction: column; gap: 4px; }
+.conn-field span { font-size: 11px; color: var(--muted); font-weight: 600; }
+.conn-field input {
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+.conn-field input:focus { outline: none; border-color: var(--accent); }
+
+.conn-dev-row { display: flex; align-items: center; gap: 12px; }
+.conn-help { font-size: 11.5px; color: var(--accent); text-decoration: none; cursor: pointer; }
+.conn-help:hover { text-decoration: underline; }
+
+.onboard-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 22px;
+}
+.onboard-btn {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  height: 40px;
+  padding: 0 18px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.14s var(--ease), opacity 0.14s var(--ease);
+}
+.onboard-btn.ghost { color: var(--muted); }
+.onboard-btn.ghost:hover { background: var(--hover); color: var(--text); }
+.onboard-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.onboard-btn.primary:hover { opacity: 0.9; }
+
+.onboard-foot { margin: 14px 0 0; font-size: 11.5px; color: var(--warn); }
+.onboard-foot[hidden] { display: none; }
+
+/* ============ "Set up notifications" nudge (below compose) ============ */
+.notif-setup {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 2px 0 10px;
+  padding: 3px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.notif-setup[hidden] { display: none; }
+
+.notif-setup-main {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: left;
+  transition: background 0.14s var(--ease);
+}
+.notif-setup-main:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+
+.notif-setup-icon { display: inline-flex; flex: 0 0 auto; }
+.notif-setup-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.notif-setup-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.notif-setup-skip {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 5px 9px;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: background 0.14s var(--ease), color 0.14s var(--ease);
+}
+.notif-setup-skip:hover { background: var(--hover); color: var(--text); }
+
+/* Collapsed icon rail: keep just the bell. */
+body.collapsed.mode-rail:not(.settings-open) .notif-setup { padding: 2px; }
+body.collapsed.mode-rail:not(.settings-open) .notif-setup-text,
+body.collapsed.mode-rail:not(.settings-open) .notif-setup-skip { display: none; }
+body.collapsed.mode-rail:not(.settings-open) .notif-setup-main { justify-content: center; padding: 6px 0; }
+
+/* ============ Paged settings ============ */
+.set-page[hidden] { display: none; }
+
+.set-head-title { flex: 1 1 auto; }
+
+.set-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-left: -4px;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.14s var(--ease), color 0.14s var(--ease);
+}
+.set-back:hover { background: var(--hover); color: var(--text); }
+.set-back[hidden] { display: none; }
+.set-back svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Root category list */
+.set-nav-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 11px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 10px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  transition: background 0.14s var(--ease);
+}
+.set-nav-row:hover { background: var(--hover); }
+.set-nav-ic {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--hover);
+  color: var(--muted);
+}
+.set-nav-ic svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.set-nav-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.set-nav-text strong { font-size: 13.5px; font-weight: 650; }
+.set-nav-text small { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.set-nav-ch { flex: 0 0 auto; color: var(--muted-dim); display: flex; }
+.set-nav-ch svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+.set-subhead {
+  margin: 22px 0 9px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-dim);
+}
+
+/* "Manage connections" link on the Notifications page */
+.set-link-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  margin-top: 18px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  background: transparent;
+  border-radius: 10px;
+  cursor: pointer;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  transition: background 0.14s var(--ease);
+}
+.set-link-row:hover { background: var(--hover); }
+.set-link-row svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Notification row reflects connection state */
+.set-notif-row.disconnected { opacity: 0.6; }
+
+/* Connected but onboarding never finished — notifications won't fire yet. */
+.set-notif-warn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 9px 12px;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--warn) 10%, var(--bg-elevated));
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.set-notif-warn button {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.14s var(--ease);
+}
+.set-notif-warn button:hover { background: var(--hover); }
+
+/* ============ Split view: draggable divider + drag preview ============ */
+/* The handle lives in the gutter between the two panes (the one strip of the
+   content area not covered by a native web view), so it's grabbable there. */
+.split-divider {
+  position: fixed;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--line);
+  -webkit-app-region: no-drag;
+  transition: background 0.12s var(--ease);
+}
+.split-divider[hidden] { display: none; }
+.split-divider.vertical { cursor: col-resize; }
+.split-divider.horizontal { cursor: row-resize; }
+.split-divider:hover { background: color-mix(in srgb, var(--accent) 55%, transparent); }
+
+.split-grip {
+  background: var(--muted-dim);
+  border-radius: 999px;
+}
+.split-divider.vertical .split-grip { width: 2px; height: 26px; }
+.split-divider.horizontal .split-grip { width: 26px; height: 2px; }
+.split-divider:hover .split-grip { background: var(--accent); }
+
+/* Live preview shown while dragging (real web views are detached during drag). */
+.split-ghost {
+  position: fixed;
+  z-index: 45;
+  pointer-events: none;
+}
+.split-ghost[hidden] { display: none; }
+.split-ghost-pane {
+  position: absolute;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.split-ghost-bar {
+  position: absolute;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+/* Keep the resize cursor consistent across the whole window during a drag. */
+body.split-dragging-v, body.split-dragging-v * { cursor: col-resize !important; }
+body.split-dragging-h, body.split-dragging-h * { cursor: row-resize !important; }

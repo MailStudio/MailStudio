@@ -1,0 +1,93 @@
+{
+  "name": "outlook-orbit",
+  "version": "0.9.0",
+  "description": "Secure Outlook web wrapper with tray notifications, calendar, tasks, and Asana.",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac",
+    "dist:dir": "electron-builder --dir",
+    "release": "electron-builder --publish always",
+    "check": "node --check src/main/main.js && node --check src/main/settings-store.js && node --check src/main/service-preload.js && node --check src/main/panel-preload.js && node --check src/main/secure-store.js && node --check src/main/oauth.js && node --check src/main/api-feeds.js && node --check src/main/connections.js && node --check src/main/updater.js && node --check src/renderer/panel.js && node --check src/renderer/menu.js && node --check scripts/after-pack.js",
+    "test": "node --test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MailStudio/MailStudio.git"
+  },
+  "keywords": [
+    "electron",
+    "outlook",
+    "asana",
+    "menubar",
+    "notifications"
+  ],
+  "author": "MailStudio",
+  "license": "MIT",
+  "homepage": "https://github.com/MailStudio/MailStudio#readme",
+  "bugs": {
+    "url": "https://github.com/MailStudio/MailStudio/issues"
+  },
+  "type": "commonjs",
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  },
+  "devDependencies": {
+    "electron": "^42.4.0",
+    "electron-builder": "^26.15.2"
+  },
+  "build": {
+    "appId": "com.mailstudio.outlookorbit",
+    "productName": "Outlook Orbit",
+    "afterPack": "scripts/after-pack.js",
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "MailStudio",
+        "repo": "MailStudio"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "category": "Office",
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "assets/icon.png"
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "assets/icon.png",
+      "identity": null,
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "NSBluetoothAlwaysUsageDescription": "Outlook Orbit uses Bluetooth to communicate with hardware security keys when signing in.",
+        "NSBluetoothPeripheralUsageDescription": "Outlook Orbit uses Bluetooth to communicate with hardware security keys when signing in."
+      }
+    }
+  }
+}

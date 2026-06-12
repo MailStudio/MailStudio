@@ -1,0 +1,63 @@
+name: Bug report
+description: Something broke or behaved unexpectedly
+labels: [bug]
+body:
+  - type: input
+    id: app-version
+    attributes:
+      label: App version
+      description: Outlook Orbit menu → Help → Version (or the release you downloaded)
+      placeholder: 0.9.0
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and version
+      placeholder: macOS 15.5 / Windows 11 / Ubuntu 24.04
+    validations:
+      required: true
+  - type: dropdown
+    id: service
+    attributes:
+      label: Affected service
+      options:
+        - Mail
+        - Teams
+        - Calendar
+        - To Do
+        - Asana
+        - Office suite tab
+        - Custom pinned site
+        - App itself (window, tray, settings, notifications)
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Were you connected via API or using the scraper fallback?
+      description: >
+        Check Settings → Connect accounts. "Connected" = API mode (Microsoft
+        Graph / Asana API). Not connected = scraper fallback, which reads the
+        web pages and breaks more easily when Microsoft/Asana change their UI.
+      options:
+        - API connected (Microsoft and/or Asana)
+        - Scraper fallback (not connected)
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open …
+        2. Click …
+        3. See …
