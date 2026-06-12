@@ -2,36 +2,70 @@
 
 **Outlook and Teams, finally in one place.**
 
-> **Beta** — Outlook Orbit is in active development. Things may break, selectors
-> may drift, edges may be rough. Feedback, bug reports, and pull requests are
-> very welcome — please open an issue.
->
-> Developed with the help of [Claude Code](https://claude.com/claude-code) —
-> thank you, Anthropic.
-
 > Outlook Orbit is an **unofficial** client and is not affiliated with or
 > endorsed by Microsoft or Asana. Outlook and Teams are trademarks of Microsoft
 > Corporation; Asana is a trademark of Asana, Inc.
 
-Outlook, Teams, Calendar, To Do, Asana — and your whole Office 365 suite — living
-together in one fast, persistent window with real desktop notifications, a focus
-timer, a scratchpad, and a sidebar that actually tells you
-what's happening. No browser tabs. No context switching. One sign-in.
+Outlook Orbit is a secure Electron wrapper for the Microsoft 365 web apps you
+actually live in: Outlook, Teams, Calendar, To Do, Office, OneDrive, SharePoint,
+and Asana. It keeps them warm in one persistent workspace, adds native desktop
+notifications, routes Microsoft and Asana links back into the right tab, and
+gives you a focused sidebar for unread mail, calendar events, tasks, quick notes,
+and a small Pomodoro timer.
+
+No browser tab sprawl. No context switching. One Microsoft sign-in.
+
+[Download the latest release](https://github.com/MailStudio/MailStudio/releases/latest)
+
+## Highlights
+
+- **One workspace for Microsoft 365 and Asana** — Mail, Teams, Calendar, To Do,
+  Office apps, OneDrive, Planner, SharePoint, and custom pinned sites.
+- **Native notifications** — email, calendar, Teams title changes, and Asana
+  task alerts with quiet hours, batching, snooze, and click-through routing.
+- **Smart in-app link routing** — Teams, Outlook, OneDrive, SharePoint, Office,
+  Planner, OneNote, and Asana links open in the tab that owns them.
+- **Live sidebar feeds** — unread mail, upcoming events, and assigned Asana
+  tasks without opening another window.
+- **Secure local credentials** — OAuth tokens are encrypted with Electron
+  `safeStorage` when available and never stored as plaintext by the app.
+- **Custom isolated pins** — add your own web apps without giving them access to
+  Microsoft or Asana session storage.
+- **Built for desktop habits** — tray menu, Dock badge, split view, scratchpad,
+  keyboard shortcuts, and a compact focus timer.
+
+## Downloads
+
+Version `1.0.0` is available from [GitHub Releases](https://github.com/MailStudio/MailStudio/releases/tag/1.0.0).
+
+| Platform | File |
+|---|---|
+| macOS Apple Silicon | `Outlook-Orbit-1.0.0-arm64.dmg` |
+| macOS Intel | `Outlook-Orbit-1.0.0.dmg` |
+| Windows x64 | `Outlook-Orbit-Setup-1.0.0.exe` |
+| Windows ARM64 | `Outlook-Orbit-Setup-1.0.0-arm64.exe` |
+
+Packaged builds check GitHub Releases for updates on launch and then every six
+hours. macOS builds are ad-hoc signed but not notarized yet, so see
+[Installing on macOS](#installing-on-macos-gatekeeper) for the first-launch
+Gatekeeper flow.
 
 ---
 
 ## Why it exists
 
 Microsoft's web apps are excellent. The browser experience of _using_ them is not.
-Outlook Orbit wraps everything in a dedicated macOS application that:
+Outlook Orbit wraps everything in a dedicated desktop application that:
 
 - Keeps every surface warm and logged in at all times
 - Delivers native desktop notifications the moment mail or tasks arrive
 - Puts a live unread count in your menu bar and Dock badge
 - Lets you switch between Mail, Teams, Calendar, To Do, and Asana with a single
   keystroke or click — no hunting for tabs
+- Keeps every Microsoft and Asana link **inside the app** — clicking a Teams
+  message link or an Asana task jumps to that tab, never to your browser
 
-If you've ever wished Microsoft made a real Mac app, this is that.
+If you've ever wished Microsoft made a more cohesive desktop hub, this is that.
 
 ---
 
@@ -51,6 +85,33 @@ If you've ever wished Microsoft made a real Mac app, this is that.
 One Microsoft sign-in carries across every Microsoft surface. Shared session — you
 sign in once and Mail, Teams, Calendar, To Do, and the entire Office suite are all
 authenticated.
+
+### Smart link routing — Microsoft and Asana links stay in the app
+
+Click any Microsoft or Asana link, anywhere in Orbit — an email, a Teams chat,
+a sidebar feed item, a notification — and it opens **in the tab that owns it**,
+not in your default browser:
+
+- A Teams meeting link in an email → jumps to the **Teams** tab
+- An Asana task permalink in a chat message → jumps to the **Asana** tab
+- A shared Word/Excel/PowerPoint document → opens on its **app tab** (when
+  enabled), falling back to **OneDrive/SharePoint**
+- Calendar invites, To Do lists, Planner boards, OneNote pages, office.com
+  launch links → each lands on its respective tab
+- Even `target="_blank"` popup links are intercepted and routed
+
+The router recognizes the full constellation of Microsoft hosts —
+`outlook.office.com`, `teams.microsoft.com`, `*.sharepoint.com`,
+`onedrive.live.com`, `1drv.ms`, `planner.microsoft.com`, the new
+`*.cloud.microsoft` app hosts, and more — plus `app.asana.com`. Office document
+links are matched by their `/:w:/`-style path markers, so a shared doc lands on
+the right app.
+
+Tabs you've hidden in Settings never get surfaced by a link: if no visible tab
+owns a trusted URL, it opens in your current tab (still inside the app). Only
+genuinely external links — anything that isn't Microsoft or Asana — go to your
+default browser. You can always send the active page out explicitly via the
+tray's **Open Active in Browser**.
 
 ### Live sidebar feeds
 
@@ -187,8 +248,8 @@ Microsoft surfaces alongside potentially untrusted custom pins.
   web view
 - Allowlist of trusted base domains (microsoft.com, office.com, sharepoint.com,
   teams.microsoft.com, asana.com, etc.) — suffix-matched, not prefix
-- All external navigation checked against the allowlist; unknown hosts open in
-  the default browser
+- All navigation checked against the allowlist; trusted Microsoft/Asana links
+  route to their owning tab in-app, unknown hosts open in the default browser
 - Custom pins isolated in per-site session partitions
 - `file://` and `javascript:` navigation blocked; only `http://`, `https://`, and
   `mailto:` may open externally
@@ -281,9 +342,9 @@ hours, download new versions in the background, and post a native notification
 prompting a restart (handled by [`src/main/updater.js`](src/main/updater.js) via
 `electron-updater`). There's also a **Check for Updates…** item in the app menu.
 
-To publish an update:
+To publish the next update:
 
-1. Bump `version` in `package.json` and push a matching tag (e.g. `v0.9.1`).
+1. Bump `version` in `package.json` and push a matching tag (e.g. `v1.0.1`).
    [`release.yml`](.github/workflows/release.yml) builds the macOS, Windows,
    and Linux artifacts plus the update metadata (`latest*.yml`) on the tag and
    uploads everything to a draft GitHub Release.

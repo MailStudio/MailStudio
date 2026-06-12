@@ -71,6 +71,7 @@ const TRUSTED_BASE_DOMAINS = [
   'sharepoint.com',
   'onenote.com',
   'planner.microsoft.com',
+  '1drv.ms',
   'asana.com',
   'asanausercontent.com'
 ]
@@ -838,7 +839,9 @@ function loadInServiceView(view, serviceKey, url) {
 
 // Maps a URL to the core-suite tab that owns it, recognising the various
 // Microsoft host variants so a deep link from Teams (or anywhere) lands on the
-// right tab. Returns the configured service object, or null.
+// right tab. Only visible tabs claim ownership — a hidden tab's links fall
+// through to the in-app/current-view fallback instead of surfacing a tab the
+// user removed from the sidebar. Returns the configured service object, or null.
 function coreServiceForUrl(urlString) {
   let parsed
   try {
@@ -848,7 +851,8 @@ function coreServiceForUrl(urlString) {
   }
   const host = parsed.hostname
   const route = parsed.pathname
-  const find = (key) => settings.services.find((service) => service.key === key && service.builtin)
+  const find = (key) =>
+    settings.services.find((service) => service.key === key && service.builtin && service.visible)
 
   const isOutlookHost =
     host === 'outlook.office.com' ||
@@ -858,7 +862,7 @@ function coreServiceForUrl(urlString) {
     host.endsWith('.outlook.com')
 
   if (isOutlookHost && /\/calendar/i.test(route)) return find('calendar')
-  if (isOutlookHost && /\/mail/i.test(route)) return find('mail')
+  if (isOutlookHost) return find('mail') // /mail, /owa, deep links — Mail owns the rest
   if (host === 'to-do.office.com' || host === 'to-do.microsoft.com' || host.endsWith('.todo.microsoft.com')) {
     return find('todo')
   }
@@ -872,6 +876,49 @@ function coreServiceForUrl(urlString) {
   ) {
     return find('teams')
   }
+  if (
+    host === 'planner.microsoft.com' ||
+    host.endsWith('.planner.microsoft.com') ||
+    host === 'tasks.office.com' ||
+    host === 'planner.cloud.microsoft'
+  ) {
+    return find('planner')
+  }
+  // Office documents live on SharePoint/OneDrive hosts; the /:w:/-style path
+  // segment marks the app, so a shared doc link lands on its app tab first and
+  // falls back to the storage tab (OneDrive/SharePoint) when that tab is hidden.
+  if (host.endsWith('.sharepoint.com') || host === 'onedrive.live.com' || host === '1drv.ms') {
+    const docMatch = route.match(/\/:([wxpo]):\//i)
+    if (docMatch) {
+      const appTab = { w: 'word', x: 'excel', p: 'powerpoint', o: 'onenote' }[docMatch[1].toLowerCase()]
+      const found = find(appTab)
+      if (found) return found
+    }
+    if (host === 'onedrive.live.com' || host === '1drv.ms' || host.endsWith('-my.sharepoint.com')) {
+      return find('onedrive') || find('sharepoint')
+    }
+    return find('sharepoint')
+  }
+  if (host === 'onenote.com' || host.endsWith('.onenote.com')) return find('onenote')
+  // office.com / Microsoft 365 home: /launch/<app> deep links go to the app tab,
+  // anything else to the Office home tab.
+  if (
+    host === 'office.com' ||
+    host === 'www.office.com' ||
+    host === 'm365.cloud.microsoft' ||
+    host === 'microsoft365.com' ||
+    host === 'www.microsoft365.com'
+  ) {
+    const appMatch = route.match(/\/launch\/(word|excel|powerpoint|onenote|onedrive|sharepoint)/i)
+    if (appMatch) {
+      const found = find(appMatch[1].toLowerCase())
+      if (found) return found
+    }
+    return find('office')
+  }
+  // New per-app hosts (word.cloud.microsoft and friends).
+  const cloudApp = host.match(/^(word|excel|powerpoint|onenote|onedrive|planner)\.cloud\.microsoft$/)
+  if (cloudApp) return find(cloudApp[1])
   return null
 }
 
@@ -885,6 +932,7 @@ function resolveServiceByUrl(urlString) {
     const target = new URL(urlString)
     return (
       settings.services.find((service) => {
+        if (!service.visible) return false
         const current = new URL(service.url)
         return target.hostname === current.hostname && target.pathname.startsWith(current.pathname)
       }) || null
@@ -911,6 +959,25 @@ function routeToService(targetService, url) {
     }
   }
   showService(targetService.key)
+}
+
+// In-app-first link opening for clicks that originate outside the service web
+// views (panel, dropdown, help links): the tab that owns the URL wins; any
+// other trusted Microsoft/Asana page loads in the active tab (loadInServiceView
+// re-checks the allowlist); everything else goes to the default browser.
+function openLinkInApp(url) {
+  const internalService = resolveServiceByUrl(url)
+  if (internalService) {
+    routeToService(internalService, url)
+    return
+  }
+  const view = serviceViews.get(activeServiceKey)
+  if (isAllowedHost(url) && view && !view.webContents.isDestroyed()) {
+    loadInServiceView(view, activeServiceKey, url)
+    showService(activeServiceKey)
+    return
+  }
+  openExternalSafe(url)
 }
 
 function getTrayIconPath(unread) {
@@ -1211,6 +1278,12 @@ function createServiceView(service) {
     const internalService = resolveServiceByUrl(url)
     if (internalService) {
       routeToService(internalService, url)
+      return { action: 'deny' }
+    }
+    // Trusted Microsoft/Asana page with no owning tab: keep it in-app in the
+    // tab that spawned it rather than bouncing to the default browser.
+    if (isAllowedHost(url)) {
+      loadInServiceView(view, service.key, url)
       return { action: 'deny' }
     }
     openExternalSafe(url)
@@ -1939,17 +2012,18 @@ function updateTray() {
 
 /* ---------- Main window ---------- */
 // The panel + dropdown are trusted local pages that should never navigate away
-// or spawn windows. Block both, sending any stray link to the browser.
+// or spawn windows. Block both; stray links route in-app when a tab owns them
+// (Microsoft/Asana), otherwise to the browser.
 function hardenLocalWindow(win) {
   const wc = win.webContents
   wc.setWindowOpenHandler(({ url }) => {
-    openExternalSafe(url)
+    openLinkInApp(url)
     return { action: 'deny' }
   })
   wc.on('will-navigate', (event, url) => {
     if (!url.startsWith('file://')) {
       event.preventDefault()
-      openExternalSafe(url)
+      openLinkInApp(url)
     }
   })
 }
@@ -2340,7 +2414,7 @@ function registerIpc() {
         hideMenuWindow()
         break
       case 'open-url':
-        if (typeof command.url === 'string') openExternalSafe(command.url)
+        if (typeof command.url === 'string') openLinkInApp(command.url)
         break
       case 'compose':
         if (typeof command.kind === 'string') compose(command.kind)
