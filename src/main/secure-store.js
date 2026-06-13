@@ -62,6 +62,11 @@ function persist() {
     const blob = safeStorage.encryptString(JSON.stringify(cache))
     const target = vaultPath()
     const tmp = target + '.tmp'
+    // Remove any pre-existing .tmp file before writing — a symlink planted at
+    // this path by another process could otherwise redirect the write to an
+    // attacker-controlled target. Unlink breaks the symlink; the subsequent
+    // write creates a fresh, owned, 0o600 regular file.
+    try { fs.unlinkSync(tmp) } catch { /* file may not exist */ }
     // Atomic write: never leave a torn/partial vault behind if we crash
     // mid-write. Owner-only permissions on the temp file from the start.
     fs.writeFileSync(tmp, blob, { mode: 0o600 })

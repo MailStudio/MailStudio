@@ -29,6 +29,8 @@ const SERVICE_ICONS = {
     '<svg viewBox="0 0 24 24"><circle cx="12" cy="6.5" r="3"/><circle cx="6.5" cy="15" r="3"/><circle cx="17.5" cy="15" r="3"/></svg>',
   office:
     '<svg viewBox="0 0 24 24"><path d="M13 3 5 6v12l8 3 6-2.5V5.5L13 3zM13 3v18M13 7l6-1.5M13 17l6 1.5"/></svg>',
+  copilot:
+    '<svg viewBox="0 0 24 24"><path d="M12 3c.7 3.5 2 4.8 5.5 5.5C14 9.2 12.7 10.5 12 14c-.7-3.5-2-4.8-5.5-5.5C10 7.8 11.3 6.5 12 3z"/><path d="M18.5 14c.4 1.8 1 2.5 2.8 2.9-1.8.4-2.4 1-2.8 2.8-.4-1.8-1-2.4-2.8-2.8 1.8-.4 2.4-1.1 2.8-2.9z"/></svg>',
   word:
     '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2.5"/><path d="M7.5 9l1.6 6 1.4-4.2L11.9 15l1.6-6"/></svg>',
   excel:
@@ -129,7 +131,7 @@ function renderFeed(service) {
     return wrap
   }
   if (feed.state === 'empty' || !feed.items.length) {
-    note(feed.kind === 'mail' ? 'No unread mail' : feed.kind === 'calendar' ? 'No upcoming events' : 'No tasks found')
+    note(feed.kind === 'mail' ? 'Inbox zero' : feed.kind === 'calendar' ? 'No upcoming events' : 'No tasks assigned')
     return wrap
   }
 
@@ -139,9 +141,17 @@ function renderFeed(service) {
 
     if (feed.kind === 'mail') {
       row.classList.add('feed-mail')
+      const timeStr = item.receivedIso
+        ? relativeTime(item.receivedIso)
+        : item.today === true ? 'Today' : ''
+      const preview = cleanText(item.preview || '')
       row.innerHTML = `
-        <div class="feed-sender">${escapeHtml(cleanText(item.sender) || 'Unknown')}</div>
+        <div class="feed-mail-header">
+          <div class="feed-sender">${escapeHtml(cleanText(item.sender) || 'Unknown')}</div>
+          ${timeStr ? `<div class="feed-time">${escapeHtml(timeStr)}</div>` : ''}
+        </div>
         <div class="feed-subject">${escapeHtml(cleanText(item.subject) || '(no subject)')}</div>
+        ${preview ? `<div class="feed-preview">${escapeHtml(preview)}</div>` : ''}
       `
       row.addEventListener('click', (event) => {
         window.panelApi.sendCommand({
@@ -154,8 +164,10 @@ function renderFeed(service) {
       })
     } else if (feed.kind === 'calendar') {
       row.classList.add('feed-event')
+      if (item.cancelled) row.classList.add('feed-event-cancelled')
       row.innerHTML = `
         <div class="feed-event-title">${escapeHtml(cleanText(item.title) || 'Event')}</div>
+        ${item.cancelled ? '<div class="feed-event-status">Cancelled</div>' : ''}
         ${item.time ? `<div class="feed-event-time">${escapeHtml(item.time)}</div>` : ''}
       `
       row.addEventListener('click', (event) => {
@@ -175,7 +187,13 @@ function renderFeed(service) {
         .slice(0, 4)
         .map((s) => `<div class="feed-subtask">${escapeHtml(s)}</div>`)
         .join('')
-      row.innerHTML = `<div class="feed-task-name">${escapeHtml(cleanText(item.name) || 'Task')}</div>${subs}`
+      const dueLabel = item.dueOn ? formatDueDate(item.dueOn) : ''
+      const dueClass = dueLabel === 'Overdue' ? 'feed-due overdue' : dueLabel === 'Due today' ? 'feed-due due-today' : 'feed-due'
+      row.innerHTML = `
+        <div class="feed-task-name">${escapeHtml(cleanText(item.name) || 'Task')}</div>
+        ${subs}
+        ${dueLabel ? `<div class="${dueClass}">${escapeHtml(dueLabel)}</div>` : ''}
+      `
       row.addEventListener('click', (event) => {
         window.panelApi.sendCommand({
           type: 'open-feed-item',
@@ -194,6 +212,12 @@ function renderFeed(service) {
 
 // Services whose right-click context menu offers snooze options.
 const SNOOZABLE_KEYS = new Set(['mail', 'teams', 'calendar', 'asana'])
+const FEED_COLLAPSE_ICON =
+  '<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>'
+
+function isSnoozableService(service) {
+  return SNOOZABLE_KEYS.has(service.key) || Boolean(service.mailboxManaged)
+}
 
 function renderServices(snapshot) {
   serviceList.innerHTML = ''
@@ -207,6 +231,21 @@ function renderServices(snapshot) {
     const splitIndex = splitKeys.indexOf(service.key)
     const inSplit = splitIndex !== -1
     const isActive = service.key === snapshot.activeServiceKey
+    const feedCollapsed = Boolean(service.feedCollapsed)
+
+    const row = document.createElement('div')
+    row.className = 'service-row'
+
+    const homeBtn = document.createElement('button')
+    homeBtn.type = 'button'
+    homeBtn.className = 'service-home'
+    homeBtn.title = `Home — ${service.label}`
+    homeBtn.innerHTML = `<span class="service-icon">${SERVICE_ICONS[service.icon] || SERVICE_ICONS.link}</span>`
+    homeBtn.addEventListener('click', (event) => {
+      event.stopPropagation()
+      window.panelApi.sendCommand({ type: 'go-service-home', serviceKey: service.key })
+    })
+    row.appendChild(homeBtn)
 
     const button = document.createElement('button')
     const classes = ['service']
@@ -218,7 +257,7 @@ function renderServices(snapshot) {
     button.title = inSplit
       ? `${service.label} · Split pane ${splitIndex + 1} (${SPLIT_MOD_LABEL}-click to remove)`
       : `${service.label} · ${SPLIT_MOD_LABEL}-click to open beside the current tab`
-    if (SNOOZABLE_KEYS.has(service.key)) button.title += ' · right-click for snooze & more'
+    if (isSnoozableService(service)) button.title += ' · right-click for snooze & more'
 
     const hasUnread = service.unreadCount > 0
     const count = service.unreadCount
@@ -229,16 +268,11 @@ function renderServices(snapshot) {
       ? `<span class="service-split">${splitIndex === 0 ? SPLIT_LEFT_ICON : SPLIT_RIGHT_ICON}</span>`
       : ''
     button.innerHTML = `
-      <span class="service-icon">${SERVICE_ICONS[service.icon] || SERVICE_ICONS.link}</span>
       <span class="service-name">${escapeHtml(service.label)}</span>
       ${splitIcon}
       ${snoozeIcon}
-      <span class="service-badge${hasUnread ? '' : ' hidden'}">${count}</span>
     `
     button.addEventListener('click', (event) => {
-      // Cmd-click (macOS) / Ctrl-click (Windows/Linux) pairs this tab with the
-      // active one (or toggles it within an existing split); a plain click
-      // switches to it and exits split view.
       const type = event.metaKey || event.ctrlKey ? 'split-select' : 'switch-service'
       window.panelApi.sendCommand({ type, serviceKey: service.key })
     })
@@ -246,9 +280,30 @@ function renderServices(snapshot) {
       e.preventDefault()
       window.panelApi.sendCommand({ type: 'tab-context-menu', serviceKey: service.key })
     })
-    group.appendChild(button)
+    row.appendChild(button)
+
+    const badge = document.createElement('span')
+    badge.className = `service-badge${hasUnread ? '' : ' hidden'}`
+    badge.textContent = String(count)
+    row.appendChild(badge)
 
     if (service.feed) {
+      const collapseBtn = document.createElement('button')
+      collapseBtn.type = 'button'
+      collapseBtn.className = `feed-collapse${feedCollapsed ? ' collapsed' : ''}`
+      collapseBtn.title = feedCollapsed ? 'Show notifications' : 'Hide notifications'
+      collapseBtn.setAttribute('aria-expanded', feedCollapsed ? 'false' : 'true')
+      collapseBtn.innerHTML = FEED_COLLAPSE_ICON
+      collapseBtn.addEventListener('click', (event) => {
+        event.stopPropagation()
+        window.panelApi.sendCommand({ type: 'toggle-feed-collapse', serviceKey: service.key })
+      })
+      row.appendChild(collapseBtn)
+    }
+
+    group.appendChild(row)
+
+    if (service.feed && !feedCollapsed) {
       group.appendChild(renderFeed(service))
     }
     serviceList.appendChild(group)
@@ -540,6 +595,13 @@ function render(snapshot) {
   applyTheme(snapshot.theme === 'light' ? 'light' : 'dark')
   document.documentElement.toggleAttribute('data-glass', Boolean(snapshot.glassMode))
 
+  // Apply the persisted sidebar width from settings. Don't clobber it while
+  // the user is actively dragging the resize handle (sbDrag is live then).
+  if (!sbDrag && typeof snapshot.sidebarExpandedWidth === 'number') {
+    SB_EXPANDED = snapshot.sidebarExpandedWidth
+    document.documentElement.style.setProperty('--sb-expanded', `${SB_EXPANDED}px`)
+  }
+
   document.body.classList.toggle('collapsed', Boolean(snapshot.sidebarCollapsed))
   document.body.classList.toggle('mode-rail', snapshot.collapseMode === 'rail')
   document.body.classList.toggle('mode-vanish', snapshot.collapseMode !== 'rail')
@@ -602,9 +664,56 @@ function render(snapshot) {
 const SPLIT_GUTTER = 8
 const SPLIT_MIN = 0.15
 const SPLIT_MAX = 0.85
-const SB_EXPANDED = 280
+let SB_EXPANDED = 280  // kept in sync with snapshot.sidebarExpandedWidth
 const SB_RAIL = 76
-const TOPBAR_H = 46
+const TOPBAR_H = 38
+const SB_MIN = 180
+const SB_MAX = 480
+
+/* ---------- Sidebar resize ---------- */
+const sbResizeHandle = document.getElementById('sidebar-resize-handle')
+let sbDrag = null   // { startX, startWidth } while dragging
+let sbLastSentWidth = null
+
+function onSbMove(e) {
+  if (!sbDrag) return
+  const newWidth = Math.min(SB_MAX, Math.max(SB_MIN, sbDrag.startWidth + e.clientX - sbDrag.startX))
+  // Update CSS variable immediately so the sidebar and handle move live.
+  document.documentElement.style.setProperty('--sb-expanded', `${newWidth}px`)
+  SB_EXPANDED = newWidth
+  if (latest) latest.sidebarExpandedWidth = newWidth
+  positionSplitDivider()
+  // Throttle IPC: only send when width changed by ≥2px to avoid flooding main.
+  if (sbLastSentWidth === null || Math.abs(newWidth - sbLastSentWidth) >= 2) {
+    sbLastSentWidth = newWidth
+    window.panelApi.sendCommand({ type: 'set-sidebar-width', width: newWidth })
+  }
+}
+
+function onSbUp() {
+  if (!sbDrag) return
+  document.removeEventListener('mousemove', onSbMove, true)
+  document.removeEventListener('mouseup', onSbUp, true)
+  window.removeEventListener('blur', onSbUp)
+  document.body.classList.remove('sb-resizing')
+  const finalWidth = SB_EXPANDED
+  window.panelApi.sendCommand({ type: 'set-sidebar-width', width: finalWidth, save: true })
+  sbDrag = null
+  sbLastSentWidth = null
+}
+
+if (sbResizeHandle) {
+  sbResizeHandle.addEventListener('mousedown', (e) => {
+    // Only drag when sidebar is actually expanded.
+    if (document.body.classList.contains('collapsed') && !document.body.classList.contains('settings-open')) return
+    e.preventDefault()
+    sbDrag = { startX: e.clientX, startWidth: SB_EXPANDED }
+    document.body.classList.add('sb-resizing')
+    document.addEventListener('mousemove', onSbMove, true)
+    document.addEventListener('mouseup', onSbUp, true)
+    window.addEventListener('blur', onSbUp)
+  })
+}
 
 const splitOrientBtn = document.getElementById('split-orient')
 const splitDivider = document.getElementById('split-divider')
@@ -632,6 +741,8 @@ function clampRatio(r) {
 // Mirrors main's sidebarWidth() so the divider aligns with the real gutter.
 function contentRect(snap) {
   let left
+  // Use the live SB_EXPANDED (updated from snapshot and during drag) so the
+  // split divider handle always sits in the real gutter, not at 280px.
   if (snap.settingsOpen || !snap.sidebarCollapsed) left = SB_EXPANDED
   else left = snap.collapseMode === 'rail' ? SB_RAIL : 0
   return {
@@ -840,6 +951,194 @@ function cleanText(value) {
   return String(value || '').replace(/[\u200B-\u200D\u2060\uFEFF\uFFFD\uE000-\uF8FF]/g, '').trim()
 }
 
+// Relative time label from a received-at ISO timestamp.
+function relativeTime(isoString) {
+  if (!isoString) return ''
+  const d = new Date(isoString)
+  if (Number.isNaN(d.getTime())) return ''
+  const diff = Date.now() - d.getTime()
+  if (diff < 60000) return 'Just now'
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`
+  const today = new Date()
+  const yesterday = new Date(today)
+  yesterday.setDate(today.getDate() - 1)
+  if (d.toDateString() === today.toDateString()) return 'Today'
+  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday'
+  return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
+}
+
+// Human-friendly due-date label for Asana task items.
+function formatDueDate(dateStr) {
+  if (!dateStr) return ''
+  const d = new Date(`${dateStr}T00:00:00`)
+  if (Number.isNaN(d.getTime())) return ''
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const tomorrow = new Date(today)
+  tomorrow.setDate(today.getDate() + 1)
+  if (d.getTime() < today.getTime()) return 'Overdue'
+  if (d.toDateString() === today.toDateString()) return 'Due today'
+  if (d.toDateString() === tomorrow.toDateString()) return 'Due tomorrow'
+  return `Due ${d.toLocaleDateString([], { month: 'short', day: 'numeric' })}`
+}
+
+/* ---------- Downloads ---------- */
+const dlDrawer = document.getElementById('dl-drawer')
+const dlList = document.getElementById('dl-list')
+const dlEmpty = document.getElementById('dl-empty')
+const dlToggleBtn = document.getElementById('dl-toggle-btn')
+const dlBadge = document.getElementById('dl-badge')
+
+// Classify a filename to drive icon colour and the file-type icon glyph.
+function dlFileKind(filename) {
+  const ext = (filename.split('.').pop() || '').toLowerCase()
+  if (/^(jpg|jpeg|png|gif|webp|svg|heic|avif|bmp|tiff?)$/.test(ext)) return 'image'
+  if (/^(mp4|mov|mkv|avi|webm|m4v|flv|wmv)$/.test(ext)) return 'video'
+  if (/^(zip|tar|gz|bz2|xz|7z|rar|dmg|iso|pkg)$/.test(ext)) return 'archive'
+  if (/^(pdf|doc|docx|xls|xlsx|ppt|pptx|odt|ods|odp|pages|numbers|key|txt|md|csv)$/.test(ext)) return 'doc'
+  return 'other'
+}
+
+// Icon SVG paths by kind.
+const DL_KIND_ICON = {
+  image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>',
+  video: '<polygon points="5 3 19 12 5 21 5 3"/>',
+  archive: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
+  doc: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>',
+  other: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>'
+}
+
+function formatBytes(bytes) {
+  if (!bytes || bytes <= 0) return '0 B'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1073741824) return `${(bytes / 1048576).toFixed(1)} MB`
+  return `${(bytes / 1073741824).toFixed(2)} GB`
+}
+
+function renderDownloads({ list, activeCount }) {
+  // Show/hide button and badge
+  if (!dlToggleBtn) return
+  if (list.length === 0) {
+    dlToggleBtn.hidden = true
+    if (dlBadge) dlBadge.hidden = true
+    return
+  }
+  dlToggleBtn.hidden = false
+  if (dlBadge) {
+    if (activeCount > 0) {
+      dlBadge.textContent = String(activeCount)
+      dlBadge.hidden = false
+    } else {
+      dlBadge.hidden = true
+    }
+  }
+
+  if (!dlList) return
+  dlList.innerHTML = ''
+  dlEmpty.hidden = list.length > 0
+
+  for (const dl of list) {
+    const kind = dlFileKind(dl.filename)
+    const ext = dl.filename.includes('.') ? dl.filename.split('.').pop().toLowerCase().slice(0, 4) : ''
+    const progress = dl.totalBytes > 0 ? dl.receivedBytes / dl.totalBytes : 0
+    const pct = Math.min(100, Math.round(progress * 100))
+
+    let metaText
+    if (dl.state === 'progressing') {
+      const received = formatBytes(dl.receivedBytes)
+      const total = dl.totalBytes > 0 ? ` of ${formatBytes(dl.totalBytes)}` : ''
+      const speed = dl.speed > 0 ? ` · ${formatBytes(dl.speed)}/s` : ''
+      metaText = `${received}${total}${speed}`
+    } else if (dl.state === 'completed') {
+      metaText = `${formatBytes(dl.totalBytes)} · Done`
+    } else if (dl.state === 'cancelled') {
+      metaText = 'Cancelled'
+    } else {
+      metaText = 'Failed'
+    }
+
+    const item = document.createElement('div')
+    item.className = `dl-item dl-${dl.state}`
+    item.dataset.kind = kind
+
+    item.innerHTML = `
+      <div class="dl-file-icon">
+        <svg viewBox="0 0 24 24">${DL_KIND_ICON[kind] || DL_KIND_ICON.other}</svg>
+        ${ext ? `<span class="dl-ext">${escapeHtml(ext)}</span>` : ''}
+      </div>
+      <div class="dl-details">
+        <div class="dl-name" title="${escapeHtml(dl.filename)}">${escapeHtml(dl.filename)}</div>
+        <div class="dl-meta">${escapeHtml(metaText)}</div>
+        ${dl.state === 'progressing'
+          ? `<div class="dl-progress-wrap"><div class="dl-progress-fill" style="width:${pct}%"></div></div>`
+          : ''}
+      </div>
+      <div class="dl-actions">
+        ${dl.state === 'completed' && dl.savePath ? `
+          <button class="dl-act" data-action="open" data-id="${dl.id}" title="Open file">
+            <svg viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+          </button>
+          <button class="dl-act" data-action="show" data-id="${dl.id}" title="Show in Finder">
+            <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          </button>` : ''}
+        ${dl.state === 'progressing' ? `
+          <button class="dl-act danger" data-action="cancel" data-id="${dl.id}" title="Cancel">
+            <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>` : ''}
+      </div>
+    `
+    dlList.appendChild(item)
+  }
+
+  // Wire action buttons
+  for (const btn of dlList.querySelectorAll('.dl-act')) {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      window.panelApi.sendCommand({ type: `download-${btn.dataset.action}`, id: Number(btn.dataset.id) })
+    })
+  }
+}
+
+// Toggle drawer open/close
+if (dlToggleBtn) {
+  dlToggleBtn.addEventListener('click', (e) => {
+    e.stopPropagation()
+    dlDrawer.hidden = !dlDrawer.hidden
+  })
+}
+if (document.getElementById('dl-drawer-close')) {
+  document.getElementById('dl-drawer-close').addEventListener('click', () => {
+    dlDrawer.hidden = true
+  })
+}
+if (document.getElementById('dl-clear-btn')) {
+  document.getElementById('dl-clear-btn').addEventListener('click', () => {
+    window.panelApi.sendCommand({ type: 'download-clear' })
+  })
+}
+// Click outside the drawer to dismiss it
+document.addEventListener('click', (e) => {
+  if (dlDrawer && !dlDrawer.hidden && !dlDrawer.contains(e.target) && e.target !== dlToggleBtn) {
+    dlDrawer.hidden = true
+  }
+})
+
+// Auto-open drawer when a new download starts
+window.panelApi.onEvent((data) => {
+  if (data && data.type === 'open-search') {
+    isSearchOpen() ? closeSearch() : openSearch()
+  }
+  if (data && data.type === 'download-started') {
+    if (dlDrawer) dlDrawer.hidden = false
+  }
+})
+
+window.panelApi.onDownloadsUpdated((data) => {
+  renderDownloads(data)
+})
+
 /* ---------- Compose bar ---------- */
 for (const btn of document.querySelectorAll('[data-compose]')) {
   btn.addEventListener('click', () => {
@@ -868,9 +1167,21 @@ summaryStrip.addEventListener('click', () => {
 const MS_ICON =
   '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="8.4" height="8.4"/><rect x="12.6" y="3" width="8.4" height="8.4"/><rect x="3" y="12.6" width="8.4" height="8.4"/><rect x="12.6" y="12.6" width="8.4" height="8.4"/></svg>'
 const PROVIDER_META = {
-  microsoft: { label: 'Microsoft', sub: 'Mail · Calendar', icon: MS_ICON, help: 'https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade' },
-  asana: { label: 'Asana', sub: 'Tasks', icon: SERVICE_ICONS.asana, help: 'https://app.asana.com/0/my-apps' }
+  microsoft: {
+    label: 'Microsoft',
+    sub: 'Mail · Calendar',
+    icon: MS_ICON,
+    helpClientId: 'https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade',
+    helpTenant: 'https://portal.azure.com/#view/Microsoft_AAD_IAM/ActiveDirectoryMenuBlade/~/Overview'
+  },
+  asana: {
+    label: 'Asana',
+    sub: 'Tasks',
+    icon: SERVICE_ICONS.asana,
+    helpClientId: 'https://app.asana.com/0/my-apps'
+  }
 }
+const README_SETUP_URL = 'https://github.com/MailStudio/MailStudio#api-setup--byo-credentials'
 const STATUS_TEXT = {
   disconnected: 'Not connected',
   connecting: 'Connecting…',
@@ -912,8 +1223,12 @@ function renderConnCards(snapshot, container) {
     const devFields =
       provider === 'microsoft'
         ? `<label class="conn-field"><span>Azure client ID</span><input type="text" class="cfg-clientId" spellcheck="false" placeholder="00000000-0000-0000-0000-000000000000" value="${escapeHtml(pcfg.clientId || '')}"></label>
-           <label class="conn-field"><span>Tenant</span><input type="text" class="cfg-tenant" spellcheck="false" placeholder="common" value="${escapeHtml(pcfg.tenant || 'common')}"></label>`
-        : `<label class="conn-field"><span>Asana client ID</span><input type="text" class="cfg-clientId" spellcheck="false" placeholder="1200000000000000" value="${escapeHtml(pcfg.clientId || '')}"></label>`
+           <a class="conn-help conn-field-help" href="#" data-ext="${meta.helpClientId}">Where do I get the client ID?</a>
+           <label class="conn-field"><span>Tenant ID</span><input type="text" class="cfg-tenant" spellcheck="false" placeholder="common" value="${escapeHtml(pcfg.tenant || 'common')}"></label>
+           <p class="conn-field-hint">Leave as <code>common</code> for personal and work/school accounts. If sign-in fails, paste your Directory (tenant) ID from Azure → App registration → Overview.</p>
+           <a class="conn-help conn-field-help" href="#" data-ext="${meta.helpTenant}">Find my tenant ID</a>`
+        : `<label class="conn-field"><span>Asana client ID</span><input type="text" class="cfg-clientId" spellcheck="false" placeholder="1200000000000000" value="${escapeHtml(pcfg.clientId || '')}"></label>
+           <a class="conn-help conn-field-help" href="#" data-ext="${meta.helpClientId}">Where do I get the client ID?</a>`
 
     card.innerHTML = `
       <div class="conn-head">
@@ -936,7 +1251,6 @@ function renderConnCards(snapshot, container) {
         ${devFields}
         <div class="conn-dev-row">
           <button class="conn-btn small conn-save">Save</button>
-          <a class="conn-help" href="#" data-ext="${meta.help}">Where do I get this?</a>
         </div>
       </div>
     `
@@ -962,6 +1276,12 @@ function renderConnCards(snapshot, container) {
           if (input) input.focus()
           return
         }
+        // Persist any unsaved client ID / tenant edits before starting OAuth.
+        const container = card.closest('.conn-cards')
+        window.panelApi.sendCommand({
+          type: 'save-connections',
+          connections: readConnConfig(container)
+        })
         window.panelApi.sendCommand({ type: 'connect-provider', provider })
       })
     }
@@ -981,30 +1301,33 @@ function renderConnCards(snapshot, container) {
         saveConnConfig(wrap)
       })
     }
-    const help = card.querySelector('.conn-help')
-    if (help) {
+    card.querySelectorAll('.conn-help').forEach((help) => {
       help.addEventListener('click', (e) => {
         e.preventDefault()
-        window.panelApi.sendCommand({ type: 'open-url', url: help.dataset.ext })
+        window.panelApi.sendCommand({ type: 'open-url', url: help.dataset.ext, external: true })
       })
-    }
+    })
   })
 }
 
 // Collect both providers' client IDs from whichever container holds the cards.
-function saveConnConfig(container) {
+function readConnConfig(container) {
   const wrap = container || document.getElementById('conn-cards')
   const read = (provider, cls) => {
     const card = wrap && wrap.querySelector(`.conn-card[data-provider="${provider}"]`)
     const el = card ? card.querySelector(cls) : null
     return el ? el.value.trim() : ''
   }
+  return {
+    microsoft: { clientId: read('microsoft', '.cfg-clientId'), tenant: read('microsoft', '.cfg-tenant') || 'common' },
+    asana: { clientId: read('asana', '.cfg-clientId') }
+  }
+}
+
+function saveConnConfig(container) {
   window.panelApi.sendCommand({
     type: 'save-connections',
-    connections: {
-      microsoft: { clientId: read('microsoft', '.cfg-clientId'), tenant: read('microsoft', '.cfg-tenant') || 'common' },
-      asana: { clientId: read('asana', '.cfg-clientId') }
-    }
+    connections: readConnConfig(container)
   })
   // Release focus from the dev panel so the incoming snapshot re-renders the
   // card (the typing-guard in render() suppresses it while focus stays inside).
@@ -1037,6 +1360,13 @@ document.getElementById('notif-setup-skip').addEventListener('click', (e) => {
 })
 
 document.getElementById('onboard-close').addEventListener('click', closeOnboarding)
+const onboardReadme = document.getElementById('onboard-readme')
+if (onboardReadme) {
+  onboardReadme.addEventListener('click', (e) => {
+    e.preventDefault()
+    window.panelApi.sendCommand({ type: 'open-url', url: README_SETUP_URL, external: true })
+  })
+}
 document.getElementById('onboard-later').addEventListener('click', closeOnboarding)
 document.getElementById('onboard-finish').addEventListener('click', () => {
   window.panelApi.sendCommand({ type: 'finish-onboarding' })
@@ -1112,8 +1442,122 @@ window.panelApi.onFindResult((data) => {
   }
 })
 
+/* ---------- Focus complete particle burst ---------- */
+const BURST_CANVAS = document.getElementById('burst-canvas')
+const BURST_COLORS = [
+  '#FF6B6B', '#FF8C42', '#FFC300', '#ADFF2F',
+  '#2FD88A', '#00CFFF', '#6C63FF', '#D66FFF',
+  '#FF6CAD', '#FF9A3C', '#57E8B0', '#74C0FC',
+  '#FFA8C5', '#A9FF68', '#FFDE59', '#5CE1E6'
+]
+
+let burstParticles = []
+let burstRaf = null
+
+function makeBurstParticle(W, H) {
+  // Spawn on a random edge, fire inward with spread.
+  const edge = (Math.random() * 4) | 0
+  let x, y, vx, vy
+  const spd = 2.5 + Math.random() * 7
+  const spread = (Math.random() - 0.5) * Math.PI * 0.55
+
+  if (edge === 0) {        // top
+    x = Math.random() * W; y = 0
+    vx = Math.sin(spread) * spd; vy = Math.cos(spread) * spd
+  } else if (edge === 1) { // right
+    x = W; y = Math.random() * H
+    vx = -Math.cos(spread) * spd; vy = Math.sin(spread) * spd
+  } else if (edge === 2) { // bottom
+    x = Math.random() * W; y = H
+    vx = Math.sin(spread) * spd; vy = -Math.cos(spread) * spd
+  } else {                 // left
+    x = 0; y = Math.random() * H
+    vx = Math.cos(spread) * spd; vy = Math.sin(spread) * spd
+  }
+
+  const isRect = Math.random() < 0.55
+  return {
+    x, y, vx, vy,
+    // rect fields
+    w: 5 + Math.random() * 8,
+    h: 3 + Math.random() * 4,
+    rot: Math.random() * Math.PI * 2,
+    rotSpd: (Math.random() - 0.5) * 0.35,
+    // circle fields
+    r: 2.5 + Math.random() * 4,
+    // common
+    shape: isRect ? 'rect' : 'dot',
+    color: BURST_COLORS[(Math.random() * BURST_COLORS.length) | 0],
+    life: 0.85 + Math.random() * 0.15,
+    decay: 0.007 + Math.random() * 0.01,
+    grav: 0.04 + Math.random() * 0.09
+  }
+}
+
+function drawBurstParticle(ctx, p) {
+  const a = p.life * p.life // quadratic — fast start, gentle tail-off
+  ctx.globalAlpha = a
+  ctx.fillStyle = p.color
+  if (p.shape === 'rect') {
+    ctx.save()
+    ctx.translate(p.x, p.y)
+    ctx.rotate(p.rot)
+    const h = p.h * (0.4 + 0.6 * p.life)
+    ctx.fillRect(-p.w * 0.5, -h * 0.5, p.w, h)
+    ctx.restore()
+  } else {
+    const r = p.r * (0.5 + 0.5 * p.life)
+    ctx.beginPath()
+    ctx.arc(p.x, p.y, r, 0, 6.283185)
+    ctx.fill()
+  }
+}
+
+function animateBurst() {
+  if (!BURST_CANVAS) return
+  const ctx = BURST_CANVAS.getContext('2d')
+  const W = BURST_CANVAS.width
+  const H = BURST_CANVAS.height
+  ctx.clearRect(0, 0, W, H)
+
+  let alive = false
+  for (const p of burstParticles) {
+    if (p.life <= 0) continue
+    alive = true
+    p.x += p.vx; p.y += p.vy
+    p.vy += p.grav; p.vx *= 0.992
+    p.rot += p.rotSpd
+    p.life -= p.decay
+    drawBurstParticle(ctx, p)
+  }
+  ctx.globalAlpha = 1
+
+  if (alive) {
+    burstRaf = requestAnimationFrame(animateBurst)
+  } else {
+    BURST_CANVAS.classList.remove('active')
+    burstParticles = []
+    burstRaf = null
+  }
+}
+
+function spawnBurst() {
+  if (!BURST_CANVAS) return
+  const W = window.innerWidth
+  const H = window.innerHeight
+  BURST_CANVAS.width = W
+  BURST_CANVAS.height = H
+  BURST_CANVAS.classList.add('active')
+
+  burstParticles = []
+  // 480 particles distributed along all four edges for a dense rim burst.
+  for (let i = 0; i < 480; i++) burstParticles.push(makeBurstParticle(W, H))
+
+  if (burstRaf) cancelAnimationFrame(burstRaf)
+  burstRaf = requestAnimationFrame(animateBurst)
+}
+
 /* ---------- Focus timer ---------- */
-const FOCUS_TOTAL = 25 * 60
 const PLAY_ICON = '<path d="M8 5v14l11-7z"/>'
 const PAUSE_ICON = '<path d="M8 5h3v14H8zM13 5h3v14h-3z"/>'
 const focusTimeEl = document.getElementById('focus-time')
@@ -1122,7 +1566,8 @@ const focusProg = document.getElementById('focus-prog')
 const focusToggleIcon = document.getElementById('focus-toggle-icon')
 const RING_CIRC = 2 * Math.PI * 19
 focusProg.style.strokeDasharray = String(RING_CIRC)
-let focusRemaining = FOCUS_TOTAL
+let focusTotal = 25 * 60
+let focusRemaining = focusTotal
 let focusRunning = false
 let focusInterval = null
 // Absolute deadline (ms epoch) while running — ticks derive the remaining time
@@ -1133,11 +1578,20 @@ function paintFocus() {
   const m = Math.floor(focusRemaining / 60)
   const s = focusRemaining % 60
   focusTimeEl.textContent = `${m}:${String(s).padStart(2, '0')}`
-  const frac = 1 - focusRemaining / FOCUS_TOTAL
+  const frac = 1 - focusRemaining / focusTotal
   focusProg.style.strokeDashoffset = String(RING_CIRC * (1 - frac))
   focusToggleIcon.innerHTML = focusRunning ? PAUSE_ICON : PLAY_ICON
-  focusLabelEl.textContent = focusRemaining === 0 ? 'Done!' : focusRunning ? 'Focusing' : focusRemaining === FOCUS_TOTAL ? 'Focus' : 'Paused'
+  focusLabelEl.textContent = focusRemaining === 0 ? 'Done!' : focusRunning ? 'Focusing' : focusRemaining === focusTotal ? 'Focus' : 'Paused'
   document.getElementById('focus').classList.toggle('running', focusRunning)
+  // Highlight the matching preset; when custom duration is active, reflect that.
+  const PRESET_MINS = [15, 25, 45]
+  const currentMins = Math.round(focusTotal / 60)
+  const isPreset = PRESET_MINS.includes(currentMins)
+  for (const btn of document.querySelectorAll('.focus-preset')) {
+    btn.classList.toggle('active', Number(btn.dataset.mins) === currentMins)
+  }
+  const customEl = document.getElementById('focus-custom')
+  if (customEl) customEl.classList.toggle('custom-active', !isPreset && focusTotal !== 25 * 60)
 }
 
 function tickFocus() {
@@ -1145,8 +1599,9 @@ function tickFocus() {
   if (focusRemaining === 0) {
     focusRunning = false
     clearInterval(focusInterval)
-    // Tell main so completion is noticeable even with the window hidden.
-    window.panelApi.sendCommand({ type: 'focus-done' })
+    window.panelApi.sendCommand({ type: 'focus-done', minutes: Math.round(focusTotal / 60) })
+    // 🎉 Colorful edge particle burst — fires from the window border inward.
+    spawnBurst()
   }
   paintFocus()
 }
@@ -1154,7 +1609,7 @@ function tickFocus() {
 document.getElementById('focus-toggle').addEventListener('click', () => {
   focusRunning = !focusRunning
   if (focusRunning) {
-    if (focusRemaining === 0) focusRemaining = FOCUS_TOTAL
+    if (focusRemaining === 0) focusRemaining = focusTotal
     focusEndsAt = Date.now() + focusRemaining * 1000
     focusInterval = setInterval(tickFocus, 1000)
   } else {
@@ -1165,9 +1620,43 @@ document.getElementById('focus-toggle').addEventListener('click', () => {
 document.getElementById('focus-reset').addEventListener('click', () => {
   focusRunning = false
   clearInterval(focusInterval)
-  focusRemaining = FOCUS_TOTAL
+  focusRemaining = focusTotal
   paintFocus()
 })
+for (const btn of document.querySelectorAll('.focus-preset')) {
+  btn.addEventListener('click', () => {
+    const mins = Number(btn.dataset.mins)
+    if (!mins) return
+    focusRunning = false
+    clearInterval(focusInterval)
+    focusTotal = mins * 60
+    focusRemaining = focusTotal
+    const customEl = document.getElementById('focus-custom')
+    if (customEl) { customEl.value = ''; customEl.classList.remove('custom-active') }
+    paintFocus()
+  })
+}
+
+// Custom duration input — type a number (minutes) and press Enter or tab away.
+const focusCustomEl = document.getElementById('focus-custom')
+if (focusCustomEl) {
+  const applyCustom = () => {
+    const mins = parseInt(focusCustomEl.value, 10)
+    if (!mins || mins < 1 || mins > 240) return
+    focusRunning = false
+    clearInterval(focusInterval)
+    focusTotal = mins * 60
+    focusRemaining = focusTotal
+    focusCustomEl.classList.add('custom-active')
+    paintFocus()
+  }
+  focusCustomEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); applyCustom(); focusCustomEl.blur() }
+    if (e.key === 'Escape') { focusCustomEl.value = ''; focusCustomEl.blur() }
+  })
+  focusCustomEl.addEventListener('change', applyCustom)
+}
+
 paintFocus()
 
 /* ---------- Tools drawer ---------- */
@@ -1205,12 +1694,6 @@ scratchArea.addEventListener('blur', () => {
 })
 
 /* ---------- Main-process events ---------- */
-window.panelApi.onEvent((data) => {
-  if (data && data.type === 'open-search') {
-    isSearchOpen() ? closeSearch() : openSearch()
-  }
-})
-
 window.panelApi.onStatusUpdated(render)
 window.panelApi.getSnapshot().then(render)
 

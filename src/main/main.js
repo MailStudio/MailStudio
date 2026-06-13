@@ -4,6 +4,7 @@ const {
   app,
   BrowserView,
   BrowserWindow,
+  dialog,
   ipcMain,
   Menu,
   Notification,
@@ -25,7 +26,7 @@ const MICROSOFT_SESSION_PARTITION = 'persist:mailstudio'
 const ASANA_SESSION_PARTITION = 'persist:mailstudio-asana'
 const WINDOW_SIZE = { width: 1280, height: 860, minWidth: 720, minHeight: 480 }
 const SIDEBAR = { expanded: 280, rail: 76 }
-const TOPBAR_HEIGHT = 46
+const TOPBAR_HEIGHT = 38
 const MENU_SIZE = { width: 328, height: 460 }
 const FEED_REFRESH_MS = 25000
 // Background view lifecycle: prewarm hidden views so every tab's notifications
@@ -37,6 +38,7 @@ const MAX_LOADED_VIEWS = 6             // cap on simultaneously-resident web vie
 const PREWARM_BOOT_DELAY_MS = 3000     // let the active tab settle before prewarming
 const PREWARM_SETTLE_MS = 5000         // gap between staggered prewarm loads
 const PREWARM_TIMEOUT_MS = 20000       // give up on a stalled load, move to next
+const MICROSOFT_REFRESH_COOLDOWN_MS = 45000 // avoid reload loops after SSO redirects
 const HIDDEN_SCRAPE_MS = 50000         // min gap between scrapes of a hidden view
 const HIBERNATE_IDLE_MS = 15 * 60 * 1000 // idle time before an eligible view sleeps
 const REAPER_MS = 60000                // hibernation sweep interval
@@ -105,7 +107,10 @@ const lastScrapeAt = {}
 // Staggered prewarm queue: keys waiting to load one-at-a-time in the background so
 // the app never spawns every renderer at once (the "too many windows" crash).
 const prewarmQueue = []
+const prewarmForceKeys = new Set()
 let prewarmActive = false
+const microsoftAuthState = new Map()
+let lastMicrosoftRefreshAt = 0
 let reaperTimer = null
 
 let activeServiceKey = 'mail'
@@ -157,6 +162,35 @@ let firstBoot = false
 // Set when the user chooses "Sign in" so the next authenticated MS navigation
 // triggers a background pre-warm of the other Microsoft tabs.
 let wantPrewarm = false
+// User-dragged sidebar width; initialised from settings in app.whenReady().
+let sidebarExpandedWidth = 280
+
+// Download tracking: every download across all session partitions is registered
+// here so the panel shows a unified list with OS-native save dialog + progress.
+let downloadIdSeq = 0
+const downloads = new Map() // id → entry (entry._item is the live DownloadItem)
+
+function pushDownloads() {
+  if (!panelWindow || panelWindow.isDestroyed()) return
+  const list = []
+  for (const e of downloads.values()) {
+    list.push({
+      id: e.id,
+      filename: e.filename,
+      url: e.url,
+      state: e.state,
+      receivedBytes: e.receivedBytes,
+      totalBytes: e.totalBytes,
+      savePath: e.savePath,
+      speed: e.speed,
+      startedAt: e.startedAt,
+      errorMessage: e.errorMessage || null
+    })
+  }
+  list.sort((a, b) => b.startedAt - a.startedAt)
+  const activeCount = list.filter((d) => d.state === 'progressing').length
+  panelWindow.webContents.send('panel:downloads-updated', { list, activeCount })
+}
 
 /* ---------- Service helpers ---------- */
 function getServices() {
@@ -220,6 +254,12 @@ function isSnoozed(serviceKey) {
 // Services that fire notifications and can therefore be snoozed individually.
 const SNOOZABLE_SERVICES = ['mail', 'teams', 'calendar', 'asana']
 
+function isSnoozableService(serviceKey) {
+  if (SNOOZABLE_SERVICES.includes(serviceKey)) return true
+  const service = findService(serviceKey)
+  return Boolean(service && service.mailboxManaged)
+}
+
 // Mute/unmute a tab's in-page audio to match its snooze state. Snoozing already
 // suppresses our native Notification sounds (isSnoozed guards fireNotification);
 // this additionally silences sounds the web app plays itself (e.g. the Teams or
@@ -243,7 +283,7 @@ function setSnooze(serviceKey, expiresAtMs) {
 
 // True when every snoozable, visible service is currently snoozed.
 function isGlobalSnoozed() {
-  const keys = visibleServices().map((s) => s.key).filter((k) => SNOOZABLE_SERVICES.includes(k))
+  const keys = visibleServices().map((s) => s.key).filter((k) => isSnoozableService(k))
   return keys.length > 0 && keys.every((k) => isSnoozed(k))
 }
 
@@ -251,7 +291,7 @@ function isGlobalSnoozed() {
 // expiresAtMs <= 0 resumes all and unmutes all.
 function setGlobalSnooze(expiresAtMs) {
   for (const service of getServices()) {
-    if (SNOOZABLE_SERVICES.includes(service.key)) {
+    if (isSnoozableService(service.key)) {
       if (expiresAtMs > 0) serviceSnooze.set(service.key, expiresAtMs)
       else serviceSnooze.delete(service.key)
     }
@@ -341,22 +381,75 @@ function isMicrosoftLoginHost(host) {
   )
 }
 
+function isMicrosoftService(service) {
+  return Boolean(service && service.builtin && service.key !== 'asana')
+}
+
+function isMicrosoftAppHost(host) {
+  return isTrustedDomain(host) && host !== 'app.asana.com' && !host.endsWith('.asana.com') && !isMicrosoftLoginHost(host)
+}
+
 // Once one Microsoft tab is authenticated, eagerly load the other VISIBLE
 // built-in Microsoft tabs in the background. They share the Microsoft session
 // partition, so silent SSO signs them all in without a second prompt. Hidden
 // Office-suite tabs are left lazy — they'll SSO silently whenever first opened.
-function prewarmMicrosoftServices() {
-  if (servicesPrewarmed) return
+function prewarmMicrosoftServices(options = {}) {
+  const { force = false, sourceKey = null } = options
+  if (servicesPrewarmed && !force) return
   servicesPrewarmed = true
   // After MS auth, spread the session to the other Microsoft tabs — but through
   // the staggered queue so they don't all spin up renderers at once.
+  // On-screen tabs (active tab or split panes) are NEVER force-reloaded: a
+  // background tab silently renewing its token must not yank a reload out from
+  // under the tab the user is actively viewing (the "random refresh" bug).
+  const onScreen = new Set(layoutKeys())
   const keys = []
   for (const service of settings.services) {
-    if (service.builtin && service.visible && service.key !== 'asana' && !loadedServiceKeys.has(service.key)) {
-      keys.push(service.key)
+    if (!service.visible || !isMicrosoftService(service) || service.key === sourceKey) continue
+    if (onScreen.has(service.key)) continue
+    if (!force && loadedServiceKeys.has(service.key)) continue
+    if (force) {
+      // A tab already showing an authenticated app page is signed in — don't
+      // reload it just because another tab renewed its token. Only tabs stuck
+      // on a login page (or not yet loaded) need the SSO session spread to them.
+      if (microsoftAuthState.get(service.key) === 'app') continue
+      loadedServiceKeys.delete(service.key)
     }
+    keys.push(service.key)
   }
-  enqueuePrewarm(keys)
+  enqueuePrewarm(keys, { force })
+}
+
+function refreshMicrosoftServicesAfterAuth(sourceKey) {
+  const now = Date.now()
+  if (now - lastMicrosoftRefreshAt < MICROSOFT_REFRESH_COOLDOWN_MS) return
+  lastMicrosoftRefreshAt = now
+  prewarmMicrosoftServices({ force: true, sourceKey })
+}
+
+function handleMicrosoftNavigation(service, url) {
+  if (!isMicrosoftService(service)) return
+  try {
+    const host = new URL(url).hostname
+    if (isMicrosoftLoginHost(host)) {
+      microsoftAuthState.set(service.key, 'login')
+      servicesPrewarmed = false
+      return
+    }
+    if (!isMicrosoftAppHost(host)) return
+
+    const cameFromLogin = microsoftAuthState.get(service.key) === 'login'
+    microsoftAuthState.set(service.key, 'app')
+    // Reached an authenticated Microsoft app page. Spread or restore the
+    // shared SSO session to the other visible Microsoft tabs in the background,
+    // including tabs that had previously loaded a sign-in page.
+    if (wantPrewarm || cameFromLogin || !servicesPrewarmed) {
+      wantPrewarm = false
+      setTimeout(() => refreshMicrosoftServicesAfterAuth(service.key), 1200)
+    }
+  } catch {
+    /* ignore */
+  }
 }
 
 // A view needs to stay resident because it is the live source of its
@@ -400,9 +493,12 @@ function hibernateServiceView(key) {
 }
 
 // Queue keys for staggered background loading and start the pump.
-function enqueuePrewarm(keys) {
+function enqueuePrewarm(keys, options = {}) {
+  const { force = false } = options
   for (const key of keys) {
     if (loadedServiceKeys.has(key)) continue
+    ensureServiceView(key)
+    if (force) prewarmForceKeys.add(key)
     if (prewarmQueue.includes(key)) continue
     prewarmQueue.push(key)
   }
@@ -420,13 +516,14 @@ function pumpPrewarm() {
   if (!prewarmQueue.length) return
   let idx = 0
   if (loadedServiceKeys.size >= MAX_LOADED_VIEWS) {
-    idx = prewarmQueue.findIndex((key) => needsLiveView(key))
+    idx = prewarmQueue.findIndex((key) => needsLiveView(key) || prewarmForceKeys.has(key))
     if (idx === -1) return // only non-essential keys left — wait for a freed slot
   }
   const key = prewarmQueue.splice(idx, 1)[0]
   const view = serviceViews.get(key)
   const service = findService(key)
   if (!view || !service || view.webContents.isDestroyed()) {
+    prewarmForceKeys.delete(key)
     pumpPrewarm()
     return
   }
@@ -435,6 +532,7 @@ function pumpPrewarm() {
   const advance = () => {
     if (advanced) return
     advanced = true
+    prewarmForceKeys.delete(key)
     prewarmActive = false
     setTimeout(pumpPrewarm, PREWARM_SETTLE_MS)
   }
@@ -576,14 +674,16 @@ function diffAndNotifyMail(items, unreadCount) {
         const view = serviceViews.get('mail')
         if (view && !view.webContents.isDestroyed() && typeof rowIdx === 'number') {
           const idx = Math.trunc(rowIdx)
-          setTimeout(() => {
-            view.webContents
-              .executeJavaScript(
-                `(() => { const rows = Array.from(document.querySelectorAll('div[role="option"], div[role="listitem"]')); const r = rows[${idx}]; if (r) { r.click(); r.scrollIntoView({ block: 'nearest' }); } })()`,
-                true
-              )
-              .catch(() => {})
-          }, 400)
+          if (Number.isInteger(idx) && idx >= 0 && idx <= 50000) {
+            setTimeout(() => {
+              view.webContents
+                .executeJavaScript(
+                  `(() => { const rows = Array.from(document.querySelectorAll('div[role="option"], div[role="listitem"]')); const r = rows[${idx}]; if (r) { r.click(); r.scrollIntoView({ block: 'nearest' }); } })()`,
+                  true
+                )
+                .catch(() => {})
+            }, 400)
+          }
         }
       }
     )
@@ -669,7 +769,7 @@ function maybeNotifyCalendar(items) {
   if (isSnoozed('calendar')) return
   const now = Date.now()
   for (const item of items) {
-    if (!item.id || !item.startIso || remindedEventIds.has(item.id)) continue
+    if (item.cancelled || !item.id || !item.startIso || remindedEventIds.has(item.id)) continue
     const start = new Date(String(item.startIso).replace(/(\.\d+)?$/, '')).getTime()
     if (Number.isNaN(start)) continue
     const delta = start - now
@@ -725,12 +825,8 @@ function resetProviderFeeds(provider) {
 function sidebarWidth() {
   // Settings live inside the sidebar, so it must be full width while open
   // (regardless of the collapse state) — and the web view stays visible.
-  if (settingsOpen) {
-    return SIDEBAR.expanded
-  }
-  if (!sidebarCollapsed) {
-    return SIDEBAR.expanded
-  }
+  if (settingsOpen) return sidebarExpandedWidth
+  if (!sidebarCollapsed) return sidebarExpandedWidth
   return settings.collapseMode === 'rail' ? SIDEBAR.rail : 0
 }
 
@@ -787,6 +883,36 @@ function goHome() {
   }
 }
 
+// Switch to a service and load its pinned home URL (sidebar icon click).
+// Defense-in-depth wrapper: only load http/https URLs regardless of what the
+// settings store has already sanitized. Main-process loadURL() bypasses the
+// will-navigate allowlist on service views, so we validate here too.
+function safeLoadURL(webContents, url) {
+  try {
+    const { protocol } = new URL(url)
+    if (protocol !== 'http:' && protocol !== 'https:') return
+  } catch {
+    return
+  }
+  webContents.loadURL(url)
+}
+
+function goServiceHome(serviceKey) {
+  const service = findService(serviceKey)
+  const webContents = serviceViews.get(serviceKey)?.webContents
+  if (!service || !webContents) return
+  settingsOpen = false
+  splitKeys = []
+  activeServiceKey = serviceKey
+  attachServiceView()
+  ensureServiceLoaded(serviceKey)
+  loadedServiceKeys.add(serviceKey)
+  safeLoadURL(webContents, service.home || service.url)
+  if (panelWindow && !panelWindow.isVisible()) showPanelWindow()
+  updateVisibleStates()
+  pushSnapshot()
+}
+
 // Load a service's URL on first activation so that sign-in on one tab sets
 // the SSO cookie before the next tab loads, letting Microsoft's silent auth
 // carry the session across without requiring a second sign-in.
@@ -795,7 +921,7 @@ function ensureServiceLoaded(key) {
   const view = serviceViews.get(key)
   const service = findService(key)
   if (view && service && !view.webContents.isDestroyed()) {
-    view.webContents.loadURL(service.url)
+    safeLoadURL(view.webContents, service.url)
     loadedServiceKeys.add(key)
   }
 }
@@ -852,8 +978,13 @@ function coreServiceForUrl(urlString) {
   }
   const host = parsed.hostname
   const route = parsed.pathname
+  // Prefers a visible tab; falls back to a hidden builtin for Office-suite apps
+  // so "Open in Word" from SharePoint/OneDrive wakes the Word tab automatically.
   const find = (key) =>
     settings.services.find((service) => service.key === key && service.builtin && service.visible)
+  const findOrReveal = (key) =>
+    find(key) ||
+    settings.services.find((service) => service.key === key && service.builtin)
 
   const isOutlookHost =
     host === 'outlook.office.com' ||
@@ -883,24 +1014,24 @@ function coreServiceForUrl(urlString) {
     host === 'tasks.office.com' ||
     host === 'planner.cloud.microsoft'
   ) {
-    return find('planner')
+    return findOrReveal('planner')
   }
   // Office documents live on SharePoint/OneDrive hosts; the /:w:/-style path
-  // segment marks the app, so a shared doc link lands on its app tab first and
-  // falls back to the storage tab (OneDrive/SharePoint) when that tab is hidden.
+  // segment marks the app, so a shared doc link lands on its app tab. The tab
+  // may be hidden by default — findOrReveal returns it anyway so routeToService
+  // can auto-reveal it (the user clicked "Open in Word", so they want it open).
   if (host.endsWith('.sharepoint.com') || host === 'onedrive.live.com' || host === '1drv.ms') {
     const docMatch = route.match(/\/:([wxpo]):\//i)
     if (docMatch) {
       const appTab = { w: 'word', x: 'excel', p: 'powerpoint', o: 'onenote' }[docMatch[1].toLowerCase()]
-      const found = find(appTab)
-      if (found) return found
+      if (appTab) return findOrReveal(appTab)
     }
     if (host === 'onedrive.live.com' || host === '1drv.ms' || host.endsWith('-my.sharepoint.com')) {
-      return find('onedrive') || find('sharepoint')
+      return findOrReveal('onedrive') || findOrReveal('sharepoint')
     }
-    return find('sharepoint')
+    return findOrReveal('sharepoint')
   }
-  if (host === 'onenote.com' || host.endsWith('.onenote.com')) return find('onenote')
+  if (host === 'onenote.com' || host.endsWith('.onenote.com')) return findOrReveal('onenote')
   // office.com / Microsoft 365 home: /launch/<app> deep links go to the app tab,
   // anything else to the Office home tab.
   if (
@@ -911,15 +1042,12 @@ function coreServiceForUrl(urlString) {
     host === 'www.microsoft365.com'
   ) {
     const appMatch = route.match(/\/launch\/(word|excel|powerpoint|onenote|onedrive|sharepoint)/i)
-    if (appMatch) {
-      const found = find(appMatch[1].toLowerCase())
-      if (found) return found
-    }
-    return find('office')
+    if (appMatch) return findOrReveal(appMatch[1].toLowerCase())
+    return findOrReveal('office')
   }
   // New per-app hosts (word.cloud.microsoft and friends).
   const cloudApp = host.match(/^(word|excel|powerpoint|onenote|onedrive|planner)\.cloud\.microsoft$/)
-  if (cloudApp) return find(cloudApp[1])
+  if (cloudApp) return findOrReveal(cloudApp[1])
   return null
 }
 
@@ -946,6 +1074,21 @@ function resolveServiceByUrl(urlString) {
 // Silently move to the tab that owns this URL and, for core-suite tabs, load
 // the exact deep-linked page into that tab's view.
 function routeToService(targetService, url) {
+  // Auto-reveal a hidden builtin tab (e.g. Word, Excel, SharePoint) when a
+  // document link targets it. The user explicitly opened that link, so making
+  // the tab visible is the right response — it appears in the sidebar and the
+  // document loads without the user having to first unhide it in Settings.
+  if (!targetService.visible) {
+    const services = settings.services.map((s) =>
+      s.key === targetService.key ? { ...s, visible: true } : s
+    )
+    settings = store.save({ ...settings, services })
+    syncServiceViews()
+    buildAppMenu()
+    buildAllowedHosts()
+    targetService = findService(targetService.key) || targetService
+  }
+
   const view = serviceViews.get(targetService.key)
   if (view && targetService.builtin) {
     try {
@@ -953,7 +1096,7 @@ function routeToService(targetService, url) {
       // attachServiceView) doesn't override this deep-link with the home URL.
       loadedServiceKeys.add(targetService.key)
       if (view.webContents.getURL() !== url) {
-        view.webContents.loadURL(url)
+        safeLoadURL(view.webContents, url)
       }
     } catch {
       /* ignore */
@@ -1002,6 +1145,16 @@ function buildAppMenu() {
         { label: 'Open MailStudio', click: () => togglePanelWindow(true) },
         { label: 'Check for Updates…', click: () => updater.check() },
         { type: 'separator' },
+        { label: 'Preferences…', accelerator: 'CmdOrCtrl+,', click: () => {
+          settingsOpen = true
+          if (panelWindow && !panelWindow.isVisible()) showPanelWindow()
+          else if (panelWindow) {
+            attachServiceView()
+            updateVisibleStates()
+            pushSnapshot()
+          }
+        } },
+        { type: 'separator' },
         { role: 'quit' }
       ]
     },
@@ -1040,6 +1193,7 @@ function buildAppMenu() {
         { type: 'separator' },
         { label: 'Back', accelerator: 'CmdOrCtrl+[', click: () => navigate('back') },
         { label: 'Forward', accelerator: 'CmdOrCtrl+]', click: () => navigate('forward') },
+        { label: 'Reload Page', accelerator: 'CmdOrCtrl+R', click: () => navigate('reload') },
         { label: 'Home', accelerator: 'CmdOrCtrl+Shift+H', click: () => goHome() },
         ...(tabAccelerators.length ? [{ type: 'separator' }, ...tabAccelerators] : [])
       ]
@@ -1047,8 +1201,10 @@ function buildAppMenu() {
     {
       label: 'View',
       submenu: [
-        { role: 'reload' },
-        { role: 'forceReload' },
+        { label: 'Force Reload', accelerator: 'CmdOrCtrl+Shift+R', click: () => {
+          const wc = serviceViews.get(activeServiceKey)?.webContents
+          if (wc && !wc.isDestroyed()) wc.reloadIgnoringCache()
+        } },
         { role: 'togglefullscreen' },
         { role: 'resetZoom' },
         { role: 'zoomIn' },
@@ -1092,27 +1248,145 @@ function configurePartition(partitionName) {
 
   const partitionSession = session.fromPartition(partitionName)
 
+  // Allowlist-check first: only pages on trusted domains may request anything.
+  // Then restrict by permission type — Microsoft services legitimately need
+  // notifications (meeting alerts) and clipboard write (copy-to-clipboard
+  // buttons). Everything else — geolocation, camera, microphone, USB, etc. —
+  // is denied regardless of origin. This limits the blast radius if a
+  // Microsoft service page is ever exploited.
+  const ALLOWED_PERMISSIONS = new Set(['notifications', 'clipboard-sanitized-write'])
+
   partitionSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin) => {
-    if (!isAllowedHost(requestingOrigin)) {
-      return false
-    }
-    return permission === 'notifications' || permission === 'clipboard-sanitized-write'
+    if (!isAllowedHost(requestingOrigin)) return false
+    return ALLOWED_PERMISSIONS.has(permission)
   })
 
   partitionSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
-    if (!isAllowedHost(details.requestingUrl)) {
-      callback(false)
-      return
+    const trusted = isAllowedHost(details.requestingUrl)
+    const allowed = trusted && ALLOWED_PERMISSIONS.has(permission)
+    if (!allowed) {
+      console.warn(`[permission] denied ${permission} for ${details.requestingUrl}`)
     }
-    callback(permission === 'notifications' || permission === 'clipboard-sanitized-write')
+    callback(allowed)
   })
 
   partitionSession.setUserAgent(getAppUserAgent())
+
+  // Intercept every download in this partition so the user always gets the OS
+  // native save dialog, regardless of which tab initiated the download.
+  partitionSession.on('will-download', (_event, item) => {
+    const suggestedName = item.getFilename() || 'download'
+    // setSaveDialogOptions triggers the OS native Save panel before the
+    // download path is committed — the user picks where the file lands.
+    item.setSaveDialogOptions({
+      title: 'Save Download',
+      defaultPath: path.join(app.getPath('downloads'), suggestedName),
+      buttonLabel: 'Save'
+    })
+
+    const id = ++downloadIdSeq
+    const entry = {
+      id,
+      filename: suggestedName,
+      url: item.getURL(),
+      state: 'progressing',
+      receivedBytes: 0,
+      totalBytes: item.getTotalBytes() || 0,
+      savePath: null,
+      speed: 0,
+      startedAt: Date.now(),
+      errorMessage: null,
+      _item: item,
+      _lastBytes: 0,
+      _lastTick: Date.now()
+    }
+    downloads.set(id, entry)
+    sendPanelEvent({ type: 'download-started', id })
+    pushDownloads()
+
+    item.on('updated', (_ev, state) => {
+      entry.state = state
+      entry.receivedBytes = item.getReceivedBytes()
+      entry.totalBytes = item.getTotalBytes() || entry.totalBytes
+      const sp = item.getSavePath()
+      if (sp) { entry.savePath = sp; entry.filename = path.basename(sp) }
+      // Rolling speed calculation, refreshed every 500 ms.
+      const now = Date.now()
+      const elapsed = (now - entry._lastTick) / 1000
+      if (elapsed >= 0.5) {
+        entry.speed = Math.max(0, Math.round((entry.receivedBytes - entry._lastBytes) / elapsed))
+        entry._lastBytes = entry.receivedBytes
+        entry._lastTick = now
+      }
+      pushDownloads()
+    })
+
+    item.once('done', (_ev, state) => {
+      entry.state = state
+      entry.receivedBytes = item.getReceivedBytes()
+      const sp = item.getSavePath()
+      if (sp) { entry.savePath = sp; entry.filename = path.basename(sp) }
+      entry.speed = 0
+      entry._item = null
+      if (state === 'completed' && entry.savePath) {
+        fireNotification(
+          { title: 'Download complete', body: entry.filename },
+          () => { shell.showItemInFolder(entry.savePath) }
+        )
+      }
+      pushDownloads()
+    })
+  })
 }
 
 function configureSession() {
   configurePartition(MICROSOFT_SESSION_PARTITION)
   configurePartition(ASANA_SESSION_PARTITION)
+}
+
+/* ---------- Cross-app Teams navigation guard ---------- */
+// Teams runs a persistent authenticated Microsoft session. Allowing any web
+// page in another tab to silently pivot a URL into Teams means that page can
+// load arbitrary content inside the signed-in context. We show a native dialog
+// so the user explicitly confirms before any cross-app URL lands in Teams.
+//
+// The dialog is intentionally native (not rendered HTML) so it cannot be
+// spoofed or suppressed by web content, even if a service view is compromised.
+async function promptTeamsNavigation(url, sourceService) {
+  if (!panelWindow || panelWindow.isDestroyed()) return 'cancel'
+
+  const sourceLabel = sourceService ? sourceService.label : 'Another page'
+  const isBuiltinMs = sourceService && sourceService.builtin && sourceService.key !== 'asana'
+
+  // Condense the URL to hostname + first 60 chars of path for readability.
+  let displayUrl = url
+  try {
+    const u = new URL(url)
+    const path = u.pathname.length > 60 ? `${u.pathname.slice(0, 60)}…` : u.pathname
+    displayUrl = u.hostname + path
+  } catch {
+    /* use raw url */
+  }
+
+  const context = isBuiltinMs
+    ? `This link comes from another Microsoft service (${sourceLabel}) in MailStudio.`
+    : `This link comes from "${sourceLabel}", a site outside Microsoft. ` +
+      `Opening it in Teams would load it inside your authenticated Microsoft session — ` +
+      `only continue if you recognise and trust this URL.`
+
+  const { response } = await dialog.showMessageBox(panelWindow, {
+    type: 'question',
+    title: 'Open link in Microsoft Teams?',
+    message: `"${sourceLabel}" wants to open a link in Teams`,
+    detail: `URL: ${displayUrl}\n\n${context}`,
+    buttons: ['Open in Teams', 'Open in Browser', 'Block'],
+    defaultId: isBuiltinMs ? 0 : 2,
+    cancelId: 2
+  })
+
+  if (response === 0) return 'teams'
+  if (response === 1) return 'browser'
+  return 'cancel'
 }
 
 /* ---------- Service views ---------- */
@@ -1263,12 +1537,18 @@ function createServiceView(service) {
     } catch {
       /* ignore */
     }
+    // Auth popups (Microsoft login, B2C, MFA) are only allowed from Microsoft
+    // services — custom pinned sites do NOT get to open Microsoft auth windows.
+    // Without this restriction, a malicious pin could open a fake login popup
+    // that inherits the Microsoft session partition.
     const isAuthPopup =
-      isMicrosoftLoginHost(popupHost) ||
-      popupHost === 'login.microsoft.com' ||
-      popupHost.endsWith('.microsoftonline.com') ||
-      popupHost === 'login.live.com' ||
-      popupHost.endsWith('.b2clogin.com')
+      isMicrosoftService(service) && (
+        isMicrosoftLoginHost(popupHost) ||
+        popupHost === 'login.microsoft.com' ||
+        popupHost.endsWith('.microsoftonline.com') ||
+        popupHost === 'login.live.com' ||
+        popupHost.endsWith('.b2clogin.com')
+      )
     if (isAuthPopup) {
       return {
         action: 'allow',
@@ -1276,6 +1556,7 @@ function createServiceView(service) {
           autoHideMenuBar: true,
           webPreferences: {
             partition: partitionFor(service),
+            preload: undefined, // no preload for auth popups — minimal surface
             sandbox: true,
             contextIsolation: true,
             nodeIntegration: false,
@@ -1284,10 +1565,20 @@ function createServiceView(service) {
         }
       }
     }
-    // A popup/new-window link that belongs to a tab: open it there silently.
+    // A popup/new-window link that belongs to a tab: open it there.
+    // Cross-app navigation into Teams requires explicit user confirmation.
     const internalService = resolveServiceByUrl(url)
     if (internalService) {
-      routeToService(internalService, url)
+      if (internalService.key === 'teams' && service.key !== 'teams') {
+        // Return deny synchronously, then prompt asynchronously.
+        promptTeamsNavigation(url, service).then((choice) => {
+          if (choice === 'teams') routeToService(internalService, url)
+          else if (choice === 'browser') openExternalSafe(url)
+          // 'cancel' → do nothing
+        })
+      } else {
+        routeToService(internalService, url)
+      }
       return { action: 'deny' }
     }
     // Trusted Microsoft/Asana page with no owning tab: keep it in-app in the
@@ -1300,13 +1591,23 @@ function createServiceView(service) {
     return { action: 'deny' }
   })
 
-  view.webContents.on('will-navigate', (event, url) => {
+  // Intercept both direct navigations and server-side redirect chains.
+  // will-redirect fires when the server returns a 3xx; without this handler
+  // a redirect from an allowed host to teams.microsoft.com would slip past the
+  // will-navigate guard and land in Teams without a confirmation dialog.
+  const handleNavRequest = (event, url) => {
     const internalService = resolveServiceByUrl(url)
     if (internalService) {
-      // A link that belongs to a different tab → hand it off silently.
       if (internalService.key !== service.key) {
         event.preventDefault()
-        routeToService(internalService, url)
+        if (internalService.key === 'teams') {
+          promptTeamsNavigation(url, service).then((choice) => {
+            if (choice === 'teams') routeToService(internalService, url)
+            else if (choice === 'browser') openExternalSafe(url)
+          })
+        } else {
+          routeToService(internalService, url)
+        }
       }
       return
     }
@@ -1314,7 +1615,10 @@ function createServiceView(service) {
       event.preventDefault()
       openExternalSafe(url)
     }
-  })
+  }
+
+  view.webContents.on('will-navigate', handleNavRequest)
+  view.webContents.on('will-redirect', handleNavRequest)
 
   view.webContents.on('page-title-updated', (_event, title) => {
     const state = serviceState[service.key]
@@ -1345,25 +1649,14 @@ function createServiceView(service) {
 
   view.webContents.on('did-navigate', (_event, url) => {
     if (serviceState[service.key]) serviceState[service.key].href = url
-    // Reached an authenticated Microsoft app page → spread the session to the
-    // other Microsoft tabs via silent SSO.
-    if (wantPrewarm && service.builtin && service.key !== 'asana') {
-      try {
-        const host = new URL(url).hostname
-        if (isTrustedDomain(host) && !isMicrosoftLoginHost(host)) {
-          wantPrewarm = false
-          setTimeout(prewarmMicrosoftServices, 1200)
-        }
-      } catch {
-        /* ignore */
-      }
-    }
+    handleMicrosoftNavigation(service, url)
     pushSnapshot()
   })
 
   view.webContents.on('did-navigate-in-page', (_event, url, isMainFrame) => {
     if (!isMainFrame) return
     if (serviceState[service.key]) serviceState[service.key].href = url
+    handleMicrosoftNavigation(service, url)
     pushSnapshot()
   })
 
@@ -1382,6 +1675,7 @@ function createServiceView(service) {
       // populated the cache this is a no-op (cache rule: good data wins).
       setTimeout(() => refreshFeed(service.key), 8000)
     }
+    if (service.key === 'mail') scheduleMailboxDiscover()
   })
 
   view.webContents.on('found-in-page', (_event, result) => {
@@ -1407,6 +1701,73 @@ function destroyServiceView(key) {
   loadedServiceKeys.delete(key)
   delete serviceState[key]
   delete serviceFeeds[key]
+}
+
+let mailboxDiscoverTimer = null
+
+function mailboxServiceKey(mailboxId) {
+  let h = 0
+  const str = String(mailboxId)
+  for (let i = 0; i < str.length; i += 1) {
+    h = (h << 5) - h + str.charCodeAt(i)
+    h |= 0
+  }
+  return `mail-${Math.abs(h)}`
+}
+
+function syncDiscoveredMailboxes(mailboxes) {
+  if (!Array.isArray(mailboxes) || !mailboxes.length || !findService('mail')) return
+  const extra = mailboxes.filter((mb) => mb && mb.id !== 'primary')
+  const discoveredKeys = new Set(extra.map((mb) => mailboxServiceKey(mb.id)))
+  let changed = false
+  const services = settings.services.filter((service) => {
+    if (!service.mailboxManaged) return true
+    if (discoveredKeys.has(service.key)) return true
+    changed = true
+    return false
+  })
+  const mailIndex = services.findIndex((s) => s.key === 'mail')
+  const insertAt = mailIndex === -1 ? services.length : mailIndex + 1
+  for (const mb of extra) {
+    const key = mailboxServiceKey(mb.id)
+    if (services.some((s) => s.key === key)) continue
+    services.splice(insertAt, 0, {
+      key,
+      label: mb.label || 'Mail',
+      url: mb.url,
+      home: mb.home || mb.url,
+      icon: 'mail',
+      builtin: false,
+      visible: true,
+      feed: 'mail',
+      mailboxManaged: true
+    })
+    changed = true
+  }
+  if (changed) applySettings({ ...settings, services })
+}
+
+function discoverMailboxes() {
+  const view = serviceViews.get('mail')
+  if (!view || view.webContents.isDestroyed()) return
+  const href = (serviceState.mail && serviceState.mail.href) || ''
+  try {
+    const host = new URL(href || 'https://outlook.office.com/mail/').hostname
+    if (/^(login|account)\./i.test(host)) return
+  } catch {
+    /* ignore */
+  }
+  view.webContents
+    .executeJavaScript(MAILBOX_DISCOVER, true)
+    .then((result) => {
+      if (result && Array.isArray(result.mailboxes)) syncDiscoveredMailboxes(result.mailboxes)
+    })
+    .catch(() => {})
+}
+
+function scheduleMailboxDiscover() {
+  clearTimeout(mailboxDiscoverTimer)
+  mailboxDiscoverTimer = setTimeout(discoverMailboxes, 3500)
 }
 
 function syncServiceViews() {
@@ -1630,6 +1991,57 @@ const MAIL_SCRAPE = `(() => {
   } catch (e) { return { state: 'error', items: [] }; }
 })()`
 
+// Discover additional Outlook mailboxes from the signed-in OWA navigation tree.
+const MAILBOX_DISCOVER = `(() => {
+  try {
+    const host = location.hostname;
+    if (/^(login|account)\\./i.test(host) || document.querySelector('input[name="loginfmt"]')) {
+      return { mailboxes: [] };
+    }
+    if (!/outlook\\.(office|live)\\.com/i.test(host) && !host.includes('outlook.office365')) {
+      return { mailboxes: [] };
+    }
+    const origin = location.origin;
+    const mailboxes = [];
+    const seen = new Set();
+    const add = (id, label, url) => {
+      const key = String(id || label || '').trim();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      mailboxes.push({
+        id: key.slice(0, 80),
+        label: String(label || 'Mail').trim().slice(0, 60),
+        url: url || (origin + '/mail/'),
+        home: url || (origin + '/mail/')
+      });
+    };
+    add('primary', 'Mail', origin + '/mail/');
+    const treeItems = Array.from(document.querySelectorAll('[role="treeitem"][aria-level="1"]'));
+    for (const item of treeItems) {
+      const label = (item.getAttribute('aria-label') || item.textContent || '').replace(/\\s+/g, ' ').trim();
+      if (!label || /^(inbox|favorites)$/i.test(label)) continue;
+      if (/^(drafts|sent items|sent|deleted items|junk email|archive|outbox|notes)$/i.test(label)) continue;
+      const emailMatch = label.match(/[\\w.+-]+@[\\w.-]+/);
+      if (emailMatch) {
+        const email = emailMatch[0];
+        add(email, label.split(',')[0].trim() || email, origin + '/mail/' + encodeURIComponent(email) + '/');
+      }
+    }
+    const groups = document.querySelectorAll('[role="tree"] [role="group"] > [role="treeitem"]');
+    for (const g of groups) {
+      const label = (g.getAttribute('aria-label') || g.textContent || '').replace(/\\s+/g, ' ').trim();
+      const emailMatch = label && label.match(/[\\w.+-]+@[\\w.-]+/);
+      if (emailMatch) {
+        const email = emailMatch[0];
+        add(email, label.split(',')[0].trim() || email, origin + '/mail/' + encodeURIComponent(email) + '/');
+      }
+    }
+    return { mailboxes };
+  } catch (e) {
+    return { mailboxes: [] };
+  }
+})()`
+
 // Asana uses CSS modules with hashed class names, so we try several selector
 // strategies and fall back to broader role-based matching if none hit.
 const ASANA_SCRAPE = `(() => {
@@ -1736,6 +2148,9 @@ const CALENDAR_SCRAPE = `(() => {
       const title = parts[0] || (card.innerText || '').split('\\n')[0].trim();
       const time = parts.find(p => /\\d{1,2}[:.]/i.test(p)) || parts[1] || '';
       if (!title || title.length < 2) continue;
+      const blob = (label + ' ' + (card.innerText || '')).toLowerCase();
+      const cancelled = /\\b(canceled|cancelled)\\b/.test(blob)
+        || !!card.querySelector('[style*="line-through" i], [class*="strike" i], [class*="Strike" i], s, strike, del');
       // Best-effort start time for reminders: first h:mm in the label plus
       // today's date. Only trusted when the label doesn't name a DIFFERENT
       // weekday, so next week's agenda can never fire a reminder today.
@@ -1758,7 +2173,7 @@ const CALENDAR_SCRAPE = `(() => {
       const id = now.toDateString() + '\\x00' + title + '\\x00' + time;
       if (seen.has(id)) continue;
       seen.add(id);
-      items.push({ id, title: title.slice(0, 80), time: time.slice(0, 40), startIso, rowIdx: i });
+      items.push({ id, title: title.slice(0, 80), time: time.slice(0, 40), startIso, rowIdx: i, cancelled });
       if (items.length >= 20) break;
     }
     return { state: items.length ? 'ok' : 'empty', items };
@@ -2051,13 +2466,13 @@ function createPanelWindow() {
     minimizable: true,
     fullscreenable: true,
     title: APP_NAME,
-    backgroundColor: IS_GLASS_MODE ? '#00000000' : '#16191e',
+    backgroundColor: IS_GLASS_MODE ? '#00000000' : '#000000',
     ...(IS_GLASS_MODE ? { vibrancy: 'under-window' } : {}),
     autoHideMenuBar: true,
     frame: false,
     titleBarStyle: 'hiddenInset',
     movable: true,
-    trafficLightPosition: { x: 18, y: 18 },
+    trafficLightPosition: { x: 18, y: 13 },
     webPreferences: {
       preload: path.join(__dirname, 'panel-preload.js'),
       sandbox: true,
@@ -2200,6 +2615,7 @@ function getSnapshot() {
     splitOrientation,
     splitRatio,
     sidebarCollapsed,
+    sidebarExpandedWidth,
     collapseMode: settings.collapseMode,
     taskProvider: settings.taskProvider,
     notif: settings.notif,
@@ -2217,6 +2633,7 @@ function getSnapshot() {
       canGoForward: activeWebContents ? canGoForward(activeWebContents) : false
     },
     globalSnoozed: isGlobalSnoozed(),
+    feedCollapsed: settings.feedCollapsed || {},
     services: settings.services.map((service) => {
       const state = serviceState[service.key] || {}
       const feed = serviceFeeds[service.key]
@@ -2232,6 +2649,7 @@ function getSnapshot() {
         unreadCount: state.unreadCount || 0,
         href: state.href || service.url,
         snoozed: isSnoozed(service.key),
+        feedCollapsed: Boolean((settings.feedCollapsed || {})[service.key]),
         feed: feed ? { kind: feed.kind, state: feed.state, items: feed.items } : null
       }
     })
@@ -2242,6 +2660,14 @@ function pushSnapshot() {
   updateTray()
   const snapshot = getSnapshot()
   if (panelWindow && !panelWindow.isDestroyed()) {
+    // Keep the window title in sync so Cmd+Tab / Mission Control show the
+    // active service name and unread count rather than just "MailStudio".
+    const svc = findService(activeServiceKey)
+    const unread = (serviceState[activeServiceKey] || {}).unreadCount || 0
+    const title = svc
+      ? (unread > 0 ? `${svc.label} (${unread}) — ${APP_NAME}` : `${svc.label} — ${APP_NAME}`)
+      : APP_NAME
+    panelWindow.setTitle(title)
     panelWindow.webContents.send('panel:status-updated', snapshot)
   }
   if (menuWindow && !menuWindow.isDestroyed()) {
@@ -2263,9 +2689,18 @@ function applySettings(next) {
 
 /* ---------- IPC ---------- */
 function registerIpc() {
-  ipcMain.handle('panel:get-snapshot', () => getSnapshot())
+  ipcMain.handle('panel:get-snapshot', (event) => {
+    // Only serve the snapshot to known local windows.
+    if (event.sender !== panelWindow?.webContents && event.sender !== menuWindow?.webContents) return null
+    return getSnapshot()
+  })
 
-  ipcMain.on('panel:command', (_event, command) => {
+  ipcMain.on('panel:command', (event, command) => {
+    // Reject commands from any sender that isn't one of our own local windows.
+    // Service BrowserViews use a different preload (service-preload.js) that does
+    // NOT expose sendCommand, but this check is a defense-in-depth layer against a
+    // compromised or confused renderer bypassing that boundary.
+    if (event.sender !== panelWindow?.webContents && event.sender !== menuWindow?.webContents) return
     switch (command.type) {
       case 'switch-service':
         showService(command.serviceKey)
@@ -2330,6 +2765,20 @@ function registerIpc() {
         attachServiceView()
         pushSnapshot()
         break
+      case 'set-sidebar-width': {
+        const w = typeof command.width === 'number'
+          ? Math.round(Math.min(480, Math.max(180, command.width)))
+          : null
+        if (w !== null) {
+          sidebarExpandedWidth = w
+          attachServiceView()
+          if (command.save) {
+            settings = store.save({ ...settings, sidebarWidth: w })
+            pushSnapshot()
+          }
+        }
+        break
+      }
       case 'open-settings':
         settingsOpen = true
         attachServiceView()
@@ -2355,6 +2804,17 @@ function registerIpc() {
         break
       case 'go-home':
         goHome()
+        break
+      case 'go-service-home':
+        if (typeof command.serviceKey === 'string') goServiceHome(command.serviceKey)
+        break
+      case 'toggle-feed-collapse':
+        if (typeof command.serviceKey === 'string') {
+          const collapsed = { ...(settings.feedCollapsed || {}) }
+          collapsed[command.serviceKey] = !collapsed[command.serviceKey]
+          settings = store.save({ ...settings, feedCollapsed: collapsed })
+          pushSnapshot()
+        }
         break
       case 'nav-back':
         navigate('back')
@@ -2382,6 +2842,8 @@ function registerIpc() {
           }
           if (feedKind === 'mail' && typeof command.rowIdx === 'number') {
             const idx = Math.trunc(command.rowIdx)
+            // Validate idx is a safe non-negative integer before template interpolation.
+            if (!Number.isInteger(idx) || idx < 0 || idx > 50000) break
             setTimeout(() => {
               targetView.webContents
                 .executeJavaScript(
@@ -2392,6 +2854,7 @@ function registerIpc() {
             }, 200)
           } else if (feedKind === 'calendar' && typeof command.rowIdx === 'number') {
             const idx = Math.trunc(command.rowIdx)
+            if (!Number.isInteger(idx) || idx < 0 || idx > 50000) break
             setTimeout(() => {
               targetView.webContents
                 .executeJavaScript(
@@ -2405,6 +2868,7 @@ function registerIpc() {
               loadInServiceView(targetView, command.serviceKey, command.taskUrl)
             } else if (typeof command.rowIdx === 'number') {
               const idx = Math.trunc(command.rowIdx)
+              if (!Number.isInteger(idx) || idx < 0 || idx > 50000) break
               setTimeout(() => {
                 targetView.webContents
                   .executeJavaScript(
@@ -2424,7 +2888,12 @@ function registerIpc() {
         hideMenuWindow()
         break
       case 'open-url':
-        if (typeof command.url === 'string') openLinkInApp(command.url)
+        if (typeof command.url === 'string') {
+          // Setup / help links must open in the system browser — Azure Portal
+          // and Asana developer pages break inside embedded service views.
+          if (command.external) openExternalSafe(command.url)
+          else openLinkInApp(command.url)
+        }
         break
       case 'compose':
         if (typeof command.kind === 'string') compose(command.kind)
@@ -2433,7 +2902,12 @@ function registerIpc() {
         // User-started timer: fires regardless of the onboarding notification
         // gate — the user explicitly asked for this one.
         fireNotification(
-          { title: 'Focus session complete', body: '25 minutes — take a break.' },
+          {
+            title: 'Focus session complete',
+            body: typeof command.minutes === 'number'
+              ? `${command.minutes} minutes — take a break.`
+              : 'Time to take a break.'
+          },
           () => showPanelWindow()
         )
         break
@@ -2481,7 +2955,7 @@ function registerIpc() {
               // Microsoft connect also warms the logged-in web views.
               if (command.provider === 'microsoft') {
                 finishFirstBoot()
-                prewarmMicrosoftServices()
+                refreshMicrosoftServicesAfterAuth(activeServiceKey)
               }
               // Scrapers are a pre-connect fallback only: drop their cached
               // items and baselines so the API owns the feeds from here on.
@@ -2579,6 +3053,33 @@ function registerIpc() {
         }
         setTimeout(refreshFeeds, 4000)
         break
+      // ---------- Download actions ----------
+      case 'download-open':
+        if (typeof command.id === 'number') {
+          const dl = downloads.get(command.id)
+          if (dl && dl.savePath) shell.openPath(dl.savePath).catch(() => {})
+        }
+        break
+      case 'download-show':
+        if (typeof command.id === 'number') {
+          const dl = downloads.get(command.id)
+          if (dl && dl.savePath) shell.showItemInFolder(dl.savePath)
+        }
+        break
+      case 'download-cancel':
+        if (typeof command.id === 'number') {
+          const dl = downloads.get(command.id)
+          if (dl && dl.state === 'progressing' && dl._item) {
+            try { dl._item.cancel() } catch { /* ignore */ }
+          }
+        }
+        break
+      case 'download-clear':
+        for (const [id, dl] of [...downloads]) {
+          if (dl.state !== 'progressing') downloads.delete(id)
+        }
+        pushDownloads()
+        break
       default:
         break
     }
@@ -2590,7 +3091,7 @@ function registerIpc() {
 function showTabContextMenu(serviceKey) {
   const service = findService(serviceKey)
   if (!service) return
-  const canSnooze = SNOOZABLE_SERVICES.includes(serviceKey)
+  const canSnooze = isSnoozableService(serviceKey)
   const snoozed = isSnoozed(serviceKey)
   const items = []
 
@@ -2670,6 +3171,7 @@ app.whenReady().then(() => {
 
   settings = store.load()
   firstBoot = Boolean(settings.firstBoot)
+  sidebarExpandedWidth = settings.sidebarWidth || 280
   buildAllowedHosts()
   buildAppMenu()
   configureSession()

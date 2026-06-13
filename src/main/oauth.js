@@ -119,6 +119,7 @@ function authorize({ provider, clientId, tenant, partition, parentWindow }) {
     // identity; response_mode=query keeps the code on the URL we intercept.
     if (provider === 'microsoft') {
       params.response_mode = 'query'
+      params.prompt = 'select_account'
     }
     for (const [k, v] of Object.entries(params)) {
       authUrl.searchParams.set(k, v)
@@ -177,16 +178,23 @@ function authorize({ provider, clientId, tenant, partition, parentWindow }) {
     }
 
     // Inspect every navigation for the redirect; capture code or error, then stop.
+    // Use exact protocol+host+pathname match rather than startsWith() — the prefix
+    // check would also accept URLs like http://localhost/mailstudio-auth-extra which
+    // could confuse the handler on a misconfigured redirect registration.
+    const redirectUrl = new URL(REDIRECT_URI)
     const handleNavigation = (event, url) => {
-      if (!url || !url.startsWith(REDIRECT_URI)) return
-      event.preventDefault()
       let parsed
       try {
         parsed = new URL(url)
       } catch {
-        finish(reject, new Error('Malformed OAuth redirect.'))
         return
       }
+      if (
+        parsed.protocol !== redirectUrl.protocol ||
+        parsed.host !== redirectUrl.host ||
+        parsed.pathname !== redirectUrl.pathname
+      ) return
+      event.preventDefault()
       const err = parsed.searchParams.get('error')
       if (err === 'access_denied') {
         // The user declined consent — a cancel, not a failure.

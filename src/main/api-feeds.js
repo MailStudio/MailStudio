@@ -5,7 +5,7 @@
 // Items intentionally mirror the scraped item fields, plus a `webLink` so a
 // click can open the real item in the owning web view:
 //   mail:     { id, sender, subject, preview, webLink }
-//   calendar: { id, title, time, webLink }
+//   calendar: { id, title, time, webLink, cancelled? }
 //   asana:    { id, name, subtasks, taskUrl }
 
 const GRAPH = 'https://graph.microsoft.com/v1.0'
@@ -95,7 +95,7 @@ async function fetchCalendar(accessToken) {
     `${GRAPH}/me/calendarView` +
     `?startDateTime=${encodeURIComponent(now.toISOString())}` +
     `&endDateTime=${encodeURIComponent(end.toISOString())}` +
-    `&$select=id,subject,start,end,isAllDay,webLink&$orderby=start/dateTime&$top=10`
+    `&$select=id,subject,start,end,isAllDay,webLink,isCancelled&$orderby=start/dateTime&$top=10`
   // Ask Graph to return start/end in the user's local zone for clean formatting.
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
   const json = await apiGet(url, accessToken, { Prefer: `outlook.timezone="${tz}"` })
@@ -107,7 +107,8 @@ async function fetchCalendar(accessToken) {
     // Raw local start string (no zone suffix when a Prefer tz is set) used for
     // upcoming-event reminder timing; all-day events get no reminder.
     startIso: e.isAllDay ? null : (e.start && e.start.dateTime) || null,
-    webLink: e.webLink || null
+    webLink: e.webLink || null,
+    cancelled: Boolean(e.isCancelled)
   }))
   return { state: items.length ? 'ok' : 'empty', items }
 }
@@ -119,9 +120,11 @@ function formatEventTime(dateTime) {
   const d = new Date(dateTime.replace(/(\.\d+)?$/, ''))
   if (Number.isNaN(d.getTime())) return ''
   const today = new Date()
-  const sameDay = d.toDateString() === today.toDateString()
+  const tomorrow = new Date(today)
+  tomorrow.setDate(today.getDate() + 1)
   const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-  if (sameDay) return time
+  if (d.toDateString() === today.toDateString()) return time
+  if (d.toDateString() === tomorrow.toDateString()) return `Tomorrow ${time}`
   const day = d.toLocaleDateString([], { weekday: 'short' })
   return `${day} ${time}`
 }
@@ -157,7 +160,8 @@ async function fetchAsanaTasks(accessToken, workspaceGid) {
       id: t.gid,
       name: t.name.slice(0, 110),
       subtasks: [],
-      taskUrl: t.permalink_url || null
+      taskUrl: t.permalink_url || null,
+      dueOn: t.due_on || null
     }))
   return { state: items.length ? 'ok' : 'empty', items }
 }

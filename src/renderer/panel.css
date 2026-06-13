@@ -1,7 +1,7 @@
 :root {
   --sb-expanded: 280px;
   --sb-rail: 76px;
-  --topbar: 46px;
+  --topbar: 38px;
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
   --focus-accent: #34c759;
   --accent: #0f6cbd; /* Outlook blue */
@@ -12,9 +12,10 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #16191e;
-  --chrome: #1b1f25;
-  --bg-elevated: #22272e;
+  --bg: #000000;
+  --chrome: #000000;
+  --bg-elevated: #212121;
+  --bg-soft: #212121;
   --text: #e9ebee;
   --muted: #9aa1ab;
   --muted-dim: #69707b;
@@ -23,7 +24,7 @@
   --line: rgba(255, 255, 255, 0.08);
   --border: rgba(255, 255, 255, 0.12);
   --badge: #e5484d;
-  --input-bg: #14171c;
+  --input-bg: #141414;
 }
 
 :root[data-theme="light"] {
@@ -217,13 +218,88 @@ body.collapsed.mode-vanish:not(.settings-open) .sidebar {
   flex-direction: column;
 }
 
+.svc-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.service-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.service-home {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.14s var(--ease), color 0.14s var(--ease);
+}
+
+.service-home:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.service-home .service-icon {
+  width: 26px;
+  height: 26px;
+}
+
+.feed-collapse {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 34px;
+  flex: 0 0 auto;
+  padding: 0;
+  margin-right: 2px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted-dim);
+  cursor: pointer;
+  transition: background 0.14s var(--ease), color 0.14s var(--ease), transform 0.14s var(--ease);
+}
+
+.feed-collapse svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.feed-collapse:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.feed-collapse.collapsed {
+  transform: rotate(-90deg);
+}
+
 .service {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 12px;
-  width: 100%;
-  padding: 9px 10px;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 9px 8px 9px 0;
   border: none;
   border-radius: 10px;
   background: transparent;
@@ -416,6 +492,19 @@ body.collapsed.mode-vanish:not(.settings-open) .sidebar {
   text-overflow: ellipsis;
 }
 
+.feed-event .feed-event-status {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--err);
+  letter-spacing: 0.01em;
+}
+
+.feed-event-cancelled .feed-event-title {
+  color: var(--muted);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--err) 55%, var(--muted));
+}
+
 .feed-note {
   font-size: 11.5px;
   color: var(--muted-dim);
@@ -423,11 +512,70 @@ body.collapsed.mode-vanish:not(.settings-open) .sidebar {
   font-style: italic;
 }
 
+/* Mail feed: header row (sender + timestamp) */
+.feed-mail-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.feed-mail-header .feed-sender {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Relative timestamp on mail items */
+.feed-time {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--muted-dim);
+  white-space: nowrap;
+}
+
+/* Email body preview snippet */
+.feed-preview {
+  font-size: 11px;
+  color: var(--muted-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 1px;
+}
+
+/* Asana due-date label */
+.feed-due {
+  display: inline-block;
+  margin-top: 3px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--muted-dim);
+}
+
+.feed-due.due-today {
+  color: var(--warn);
+}
+
+.feed-due.overdue {
+  color: var(--err);
+}
+
 /* Hide labels + feeds when collapsed to the rail */
 body.collapsed.mode-rail:not(.settings-open) .service {
   justify-content: center;
   padding: 9px 0;
   gap: 0;
+}
+
+body.collapsed.mode-rail:not(.settings-open) .service-home {
+  width: 100%;
+  height: 40px;
+}
+
+body.collapsed.mode-rail:not(.settings-open) .service-row .service,
+body.collapsed.mode-rail:not(.settings-open) .feed-collapse {
+  display: none;
 }
 
 body.collapsed.mode-rail:not(.settings-open) .service-name {
@@ -448,8 +596,8 @@ body.collapsed.mode-rail:not(.settings-open) .feed {
 
 body.collapsed.mode-rail:not(.settings-open) .service-badge {
   position: absolute;
-  top: -3px;
-  right: -4px;
+  top: 2px;
+  right: 2px;
   min-width: 17px;
   height: 17px;
   padding: 0 4px;
@@ -1113,6 +1261,12 @@ body.settings-open .compose-label {
 .focus-controls {
   flex: 1 1 auto;
   display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.focus-top {
+  display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
@@ -1131,6 +1285,69 @@ body.settings-open .compose-label {
 .focus-btns {
   display: flex;
   gap: 3px;
+}
+
+/* Duration presets (15 / 25 / 45 min) */
+.focus-presets {
+  display: flex;
+  gap: 4px;
+}
+
+.focus-preset {
+  flex: 1 1 auto;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-dim);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background 0.13s var(--ease), color 0.13s var(--ease), border-color 0.13s var(--ease);
+}
+
+.focus-preset:hover {
+  background: var(--hover);
+  color: var(--muted);
+}
+
+.focus-preset.active {
+  background: color-mix(in srgb, var(--focus-accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--focus-accent) 55%, transparent);
+  color: var(--focus-accent);
+}
+
+/* Custom duration number input */
+.focus-custom {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 22px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--input-bg);
+  color: var(--muted-dim);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 650;
+  text-align: center;
+  outline: none;
+  transition: border-color 0.13s var(--ease), color 0.13s var(--ease);
+  -moz-appearance: textfield;
+  user-select: text;
+}
+.focus-custom::-webkit-inner-spin-button,
+.focus-custom::-webkit-outer-spin-button { -webkit-appearance: none; }
+.focus-custom:focus {
+  border-color: var(--focus-accent);
+  color: var(--text);
+}
+.focus-custom.custom-active {
+  background: color-mix(in srgb, var(--focus-accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--focus-accent) 55%, transparent);
+  color: var(--focus-accent);
 }
 
 .focus-btn {
@@ -1248,6 +1465,65 @@ body.settings-open .compose-bar,
 body.settings-open .summary-strip,
 body.settings-open .tools-drawer {
   display: none;
+}
+
+/* ============ Focus timer particle burst ============ */
+.burst-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.burst-canvas.active {
+  opacity: 1;
+}
+
+/* ============ Sidebar resize handle ============ */
+.sidebar-resize-handle {
+  position: fixed;
+  top: var(--topbar);
+  bottom: 0;
+  /* Sits right on the sidebar's right border; offset -3px so half is inside,
+     half outside, making it easy to grab without a precise click. */
+  left: calc(var(--sb-expanded) - 3px);
+  width: 6px;
+  cursor: col-resize;
+  z-index: 8;
+  -webkit-app-region: no-drag;
+}
+
+/* Visible indicator line: shown on hover or during drag. */
+.sidebar-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 2px;
+  width: 2px;
+  height: 100%;
+  border-radius: 1px;
+  background: transparent;
+  transition: background 0.15s var(--ease);
+}
+
+.sidebar-resize-handle:hover::after,
+body.sb-resizing .sidebar-resize-handle::after {
+  background: var(--accent);
+}
+
+/* Hide the handle when the sidebar is collapsed (no edge to grab). */
+body.collapsed:not(.settings-open) .sidebar-resize-handle {
+  display: none;
+}
+
+/* Lock cursor across the whole window while dragging. */
+body.sb-resizing,
+body.sb-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 
 /* ============ Drag-to-reorder ============ */
@@ -1464,10 +1740,11 @@ body.first-boot .sidebar {
 /* ============ macOS 26 Liquid Glass ============ */
 
 :root[data-glass][data-theme="dark"] {
-  --bg: rgba(16, 18, 24, 0.12);
-  --chrome: rgba(10, 12, 18, 0.18);
-  --bg-elevated: rgba(28, 33, 44, 0.60);
-  --input-bg: rgba(8, 10, 16, 0.55);
+  --bg: rgba(0, 0, 0, 0.42);
+  --chrome: rgba(0, 0, 0, 0.50);
+  --bg-elevated: rgba(33, 33, 33, 0.72);
+  --bg-soft: rgba(33, 33, 33, 0.72);
+  --input-bg: rgba(20, 20, 20, 0.65);
   --line: rgba(255, 255, 255, 0.10);
   --border: rgba(255, 255, 255, 0.20);
   --hover: rgba(255, 255, 255, 0.12);
@@ -1692,7 +1969,10 @@ body.first-boot .sidebar {
 }
 .conn-field input:focus { outline: none; border-color: var(--accent); }
 
-.conn-dev-row { display: flex; align-items: center; gap: 12px; }
+.conn-field-hint { margin: 0; font-size: 11px; color: var(--muted-dim); line-height: 1.4; }
+.conn-field-help { margin-top: 2px; }
+
+.conn-dev-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .conn-help { font-size: 11.5px; color: var(--accent); text-decoration: none; cursor: pointer; }
 .conn-help:hover { text-decoration: underline; }
 
@@ -1962,3 +2242,234 @@ body.collapsed.mode-rail:not(.settings-open) .notif-setup-main { justify-content
 /* Keep the resize cursor consistent across the whole window during a drag. */
 body.split-dragging-v, body.split-dragging-v * { cursor: col-resize !important; }
 body.split-dragging-h, body.split-dragging-h * { cursor: row-resize !important; }
+
+/* ============ Download button (topbar) ============ */
+.dl-toggle-btn {
+  position: relative;
+}
+
+.dl-badge {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 750;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  border: 1.5px solid var(--chrome);
+}
+
+.dl-badge[hidden] { display: none; }
+.dl-toggle-btn[hidden] { display: none; }
+
+/* ============ Download drawer ============ */
+.dl-drawer {
+  position: fixed;
+  top: var(--topbar);
+  right: 0;
+  width: 360px;
+  max-height: 520px;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  background: var(--chrome);
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 14px 14px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.36);
+  overflow: hidden;
+  animation: dl-drop 0.18s var(--ease);
+}
+
+.dl-drawer[hidden] { display: none; }
+
+@keyframes dl-drop {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Liquid Glass theming */
+:root[data-glass] .dl-drawer {
+  background: color-mix(in srgb, var(--chrome) 85%, transparent);
+  -webkit-backdrop-filter: blur(60px) saturate(180%);
+  backdrop-filter: blur(60px) saturate(180%);
+}
+
+.dl-drawer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 14px 10px;
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+
+.dl-drawer-title {
+  flex: 1 1 auto;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.dl-clear-btn {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: background 0.13s var(--ease), color 0.13s var(--ease);
+  flex: 0 0 auto;
+}
+.dl-clear-btn:hover { background: var(--hover); color: var(--text); }
+
+.dl-drawer-close {
+  width: 26px !important;
+  height: 26px !important;
+  flex: 0 0 auto;
+  border-radius: 7px !important;
+}
+
+/* ============ Download list ============ */
+.dl-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 6px 0;
+}
+
+.dl-list::-webkit-scrollbar { width: 6px; }
+.dl-list::-webkit-scrollbar-thumb { background: var(--muted-dim); border-radius: 999px; }
+
+.dl-empty {
+  padding: 28px 16px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--muted-dim);
+  font-style: italic;
+}
+.dl-empty[hidden] { display: none; }
+
+/* ============ Download item ============ */
+.dl-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 14px;
+  transition: background 0.12s var(--ease);
+}
+.dl-item:hover { background: var(--hover); }
+
+.dl-file-icon {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--hover);
+  border-radius: 7px;
+  color: var(--muted);
+  position: relative;
+}
+.dl-file-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.dl-file-icon .dl-ext {
+  position: absolute;
+  bottom: 3px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+/* Color-code by file type */
+.dl-item[data-kind="image"] .dl-file-icon { color: #34c759; background: color-mix(in srgb, #34c759 12%, var(--bg-elevated)); }
+.dl-item[data-kind="video"] .dl-file-icon { color: #5e5ce6; background: color-mix(in srgb, #5e5ce6 12%, var(--bg-elevated)); }
+.dl-item[data-kind="archive"] .dl-file-icon { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, var(--bg-elevated)); }
+.dl-item[data-kind="doc"] .dl-file-icon { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated)); }
+
+.dl-details {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dl-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 2px;
+}
+
+.dl-meta {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dl-item.dl-completed .dl-meta { color: var(--ok); }
+.dl-item.dl-interrupted .dl-meta,
+.dl-item.dl-cancelled .dl-meta { color: var(--err); }
+
+.dl-progress-wrap {
+  margin-top: 5px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.dl-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.4s linear;
+}
+
+.dl-item.dl-interrupted .dl-progress-fill,
+.dl-item.dl-cancelled .dl-progress-fill { background: var(--err); }
+
+/* ============ Download item actions ============ */
+.dl-actions {
+  display: flex;
+  gap: 3px;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  padding-top: 1px;
+}
+
+.dl-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.13s var(--ease), color 0.13s var(--ease);
+}
+.dl-act:hover { background: var(--hover); color: var(--text); }
+.dl-act.danger:hover { color: var(--err); }
+.dl-act svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }

@@ -25,7 +25,7 @@
           <button class="tool" data-command="nav-forward" id="nav-forward" title="Forward">
             <svg viewBox="0 0 24 24" class="icon"><path d="M9 6l6 6-6 6" /></svg>
           </button>
-          <button class="tool" data-command="nav-reload" title="Reload">
+          <button class="tool" data-command="nav-reload" id="nav-reload" title="Reload page (⌘R)">
             <svg viewBox="0 0 24 24" class="icon"><path d="M20 11a8 8 0 1 0-.6 4M20 5v6h-6" /></svg>
           </button>
         </div>
@@ -37,6 +37,10 @@
         </button>
         <button class="tool snooze-btn" id="global-snooze" data-command="global-snooze-menu" title="Snooze all notifications & sound" aria-label="Snooze all notifications">
           <svg viewBox="0 0 24 24" class="icon"><path d="M4 8h6l-6 8h6"/><path d="M14 4h5l-5 6h5"/></svg>
+        </button>
+        <button class="tool dl-toggle-btn" id="dl-toggle-btn" title="Downloads" aria-label="Downloads" hidden>
+          <svg viewBox="0 0 24 24" class="icon"><path d="M12 3v11M7 10l5 5 5-5"/><path d="M3 17v2a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-2"/></svg>
+          <span class="dl-badge" id="dl-badge" hidden></span>
         </button>
         <div class="search" id="search">
           <button class="tool search-btn" id="search-toggle" title="Find in page (⌘F)" aria-label="Find in page">
@@ -264,14 +268,23 @@
             <span class="focus-time" id="focus-time">25:00</span>
           </div>
           <div class="focus-controls">
-            <span class="focus-label" id="focus-label">Focus</span>
-            <div class="focus-btns">
-              <button class="focus-btn" id="focus-toggle" title="Start / pause">
-                <svg viewBox="0 0 24 24" class="icon" id="focus-toggle-icon"><path d="M8 5v14l11-7z"/></svg>
-              </button>
-              <button class="focus-btn" id="focus-reset" title="Reset">
-                <svg viewBox="0 0 24 24" class="icon"><path d="M20 11a8 8 0 1 0-.6 4M20 5v6h-6"/></svg>
-              </button>
+            <div class="focus-top">
+              <span class="focus-label" id="focus-label">Focus</span>
+              <div class="focus-btns">
+                <button class="focus-btn" id="focus-toggle" title="Start / pause">
+                  <svg viewBox="0 0 24 24" class="icon" id="focus-toggle-icon"><path d="M8 5v14l11-7z"/></svg>
+                </button>
+                <button class="focus-btn" id="focus-reset" title="Reset">
+                  <svg viewBox="0 0 24 24" class="icon"><path d="M20 11a8 8 0 1 0-.6 4M20 5v6h-6"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="focus-presets">
+              <button class="focus-preset" data-mins="15" title="15 minute session">15m</button>
+              <button class="focus-preset active" data-mins="25" title="25 minute session">25m</button>
+              <button class="focus-preset" data-mins="45" title="45 minute session">45m</button>
+              <input class="focus-custom" id="focus-custom" type="number" min="1" max="240"
+                     placeholder="min" title="Custom duration in minutes — press Enter to set" />
             </div>
           </div>
         </div>
@@ -293,6 +306,12 @@
       </div>
     </aside>
 
+    <!-- Focus timer particle burst — full-window canvas, pointer-events:none -->
+    <canvas id="burst-canvas" class="burst-canvas"></canvas>
+
+    <!-- Sidebar resize: drag this to adjust sidebar width -->
+    <div class="sidebar-resize-handle" id="sidebar-resize-handle" aria-hidden="true"></div>
+
     <!-- Split view: draggable divider sits in the gutter between the two panes -->
     <div class="split-divider" id="split-divider" hidden><span class="split-grip"></span></div>
     <!-- Live preview shown while dragging the divider (real web views are detached) -->
@@ -300,6 +319,19 @@
       <div class="split-ghost-pane" id="split-ghost-a"></div>
       <div class="split-ghost-bar" id="split-ghost-bar"></div>
       <div class="split-ghost-pane" id="split-ghost-b"></div>
+    </div>
+
+    <!-- Downloads drawer — slides down from the top-right toolbar button -->
+    <div class="dl-drawer" id="dl-drawer" hidden>
+      <div class="dl-drawer-head">
+        <span class="dl-drawer-title">Downloads</span>
+        <button class="dl-clear-btn" id="dl-clear-btn" title="Clear finished downloads">Clear done</button>
+        <button class="tool dl-drawer-close" id="dl-drawer-close" title="Close" aria-label="Close downloads">
+          <svg viewBox="0 0 24 24" class="icon"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="dl-list" id="dl-list"></div>
+      <div class="dl-empty" id="dl-empty">No downloads yet</div>
     </div>
 
     <!-- First-boot welcome / Microsoft sign-in -->
@@ -327,7 +359,7 @@
         </button>
         <h2 class="onboard-title">Connect your accounts</h2>
         <p class="onboard-sub">Notifications stay silent until you connect at least one account. Sign in once — tokens are stored in your OS keychain and refresh automatically. Connecting also fills your sidebar feeds with recent unread mail and upcoming calendar events, no setup needed.</p>
-        <p class="onboard-sub">This needs your own (free) Azure / Asana app registration — about 5 minutes. See the README setup guide.</p>
+        <p class="onboard-sub">This needs your own (free) Azure / Asana app registration — about 5 minutes. <a class="conn-help" href="#" id="onboard-readme">Read the setup guide</a>.</p>
 
         <div class="conn-cards" id="conn-cards"></div>
 

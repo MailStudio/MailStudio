@@ -36,14 +36,14 @@ No browser tab sprawl. No context switching. One Microsoft sign-in.
 
 ## Downloads
 
-Version `1.0.0` is available from [GitHub Releases](https://github.com/MailStudio/MailStudio/releases/tag/1.0.0).
+Version `1.1.0` is available from [GitHub Releases](https://github.com/MailStudio/MailStudio/releases/tag/v1.1.0).
 
 | Platform | File |
 |---|---|
-| macOS Apple Silicon | `MailStudio-1.0.0-arm64.dmg` |
-| macOS Intel | `MailStudio-1.0.0.dmg` |
-| Windows x64 | `MailStudio-Setup-1.0.0.exe` |
-| Windows ARM64 | `MailStudio-Setup-1.0.0-arm64.exe` |
+| macOS Apple Silicon | `MailStudio-1.1.0-arm64.dmg` |
+| macOS Intel | `MailStudio-1.1.0.dmg` |
+| Windows x64 | `MailStudio-Setup-1.1.0.exe` |
+| Windows ARM64 | `MailStudio-Setup-1.1.0-arm64.exe` |
 
 Packaged builds check GitHub Releases for updates on launch and then every six
 hours. macOS builds are ad-hoc signed but not notarized yet, so see
@@ -289,10 +289,11 @@ secret is ever needed or stored.
 ### Microsoft (Mail + Calendar)
 
 1. [Azure Portal](https://portal.azure.com) → **App registrations** → **New registration**
-2. Name it (e.g. "MailStudio"); set supported account types to fit your setup
+2. Name it (e.g. "MailStudio"); choose **Accounts in any organizational directory and personal Microsoft accounts** (recommended). If you pick single-tenant only, you must also set the matching **Directory (tenant) ID** in the app (see step 6).
 3. **Redirect URI**: platform _Mobile and desktop applications_ → `http://localhost/mailstudio-auth`
 4. **API permissions** → Microsoft Graph → Delegated → `Mail.Read`, `Calendars.Read`, `offline_access`, `User.Read`
 5. Copy the **Application (client) ID** → paste it into the app under **Microsoft → Developer setup**
+6. **Tenant**: leave as `common` in MailStudio for most setups. If sign-in fails with an account-type error, copy the **Directory (tenant) ID** from the same app’s **Overview** page and paste it into the **Tenant** field.
 
 ### Asana (Tasks)
 

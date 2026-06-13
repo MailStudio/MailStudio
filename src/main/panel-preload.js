@@ -13,5 +13,8 @@ contextBridge.exposeInMainWorld('panelApi', {
     ipcRenderer.on('panel:event', (_event, data) => {
       if (data && data.type === 'find-result') callback(data)
     })
+  },
+  onDownloadsUpdated: (callback) => {
+    ipcRenderer.on('panel:downloads-updated', (_event, data) => callback(data))
   }
 })

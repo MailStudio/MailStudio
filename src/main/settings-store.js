@@ -53,13 +53,14 @@ const DEFAULT_SERVICES = [
     visible: true,
     feed: 'asana'
   },
-  // Extended Office suite — hidden by default, enable via Settings
+  // Extended Office suite — hidden by default, enable via Settings.
+  // www.office.com now redirects to the Microsoft 365 Copilot home.
   {
     key: 'office',
-    label: 'Office',
-    url: 'https://www.office.com/',
-    home: 'https://www.office.com/',
-    icon: 'office',
+    label: 'Copilot',
+    url: 'https://m365.cloud.microsoft/',
+    home: 'https://m365.cloud.microsoft/',
+    icon: 'copilot',
     builtin: true,
     visible: false
   },
@@ -151,6 +152,10 @@ const DEFAULTS = {
     microsoft: { clientId: '', tenant: 'common' },
     asana: { clientId: '' }
   },
+  // Per-service feed (notification preview) collapse — true = hidden.
+  feedCollapsed: {},
+  // User-dragged sidebar width in px (clamped to [180, 480]).
+  sidebarWidth: 280,
   services: DEFAULT_SERVICES
 }
 
@@ -182,9 +187,15 @@ function sanitizeService(input, builtinDefaults) {
   const builtin = builtinDefaults.get(input.key)
   return {
     key: typeof input.key === 'string' && input.key ? input.key : `site-${Math.abs(hash(url))}`,
-    label: (typeof input.label === 'string' && input.label.trim()) || (builtin ? builtin.label : 'Site'),
-    url,
-    home: (() => {
+    // Built-in labels are fixed to the default (they can't be renamed in the UI),
+    // so a renamed default (e.g. Office → Copilot) reaches existing users. Only
+    // pinned custom sites keep a user-supplied label.
+    label: builtin ? builtin.label : ((typeof input.label === 'string' && input.label.trim()) || 'Site'),
+    // Built-in services have fixed URLs that cannot be overridden via settings.
+    // Pinning them to the hardcoded defaults prevents a tampered settings file
+    // (or a compromised renderer) from redirecting the Mail tab to a phishing domain.
+    url: builtin ? builtin.url : url,
+    home: builtin ? builtin.home : (() => {
       try {
         const h = new URL(input.home || input.url)
         if (h.protocol !== 'http:' && h.protocol !== 'https:') return url
@@ -193,10 +204,12 @@ function sanitizeService(input, builtinDefaults) {
         return url
       }
     })(),
-    icon: builtin ? builtin.icon : 'link',
+    icon: builtin ? builtin.icon : (input.icon === 'mail' ? 'mail' : 'link'),
     builtin: Boolean(builtin),
     visible: input.visible !== false,
-    ...(builtin && builtin.feed ? { feed: builtin.feed } : {})
+    ...(builtin && builtin.feed ? { feed: builtin.feed } : {}),
+    ...(typeof input.feed === 'string' && input.feed ? { feed: input.feed } : {}),
+    ...(input.mailboxManaged ? { mailboxManaged: true } : {})
   }
 }
 
@@ -229,16 +242,21 @@ function normalize(raw) {
 
   settings.scratch = typeof (raw && raw.scratch) === 'string' ? raw.scratch.slice(0, 20000) : ''
 
+  const rawSbWidth = raw && typeof raw.sidebarWidth === 'number' ? raw.sidebarWidth : 280
+  settings.sidebarWidth = Math.round(Math.min(480, Math.max(180, rawSbWidth)))
+
   const rawConn = (raw && typeof raw.connections === 'object' && raw.connections) ? raw.connections : {}
   const rawMs = (rawConn.microsoft && typeof rawConn.microsoft === 'object') ? rawConn.microsoft : {}
   const rawAs = (rawConn.asana && typeof rawConn.asana === 'object') ? rawConn.asana : {}
   settings.connections = {
     microsoft: {
-      clientId: typeof rawMs.clientId === 'string' ? rawMs.clientId.trim() : '',
-      tenant: (typeof rawMs.tenant === 'string' && rawMs.tenant.trim()) || 'common'
+      // clientIds are public PKCE identifiers (not secrets); length-cap to prevent
+      // excessively large values from being persisted or forwarded to the token endpoint.
+      clientId: typeof rawMs.clientId === 'string' ? rawMs.clientId.trim().slice(0, 256) : '',
+      tenant: (typeof rawMs.tenant === 'string' && rawMs.tenant.trim().slice(0, 256)) || 'common'
     },
     asana: {
-      clientId: typeof rawAs.clientId === 'string' ? rawAs.clientId.trim() : ''
+      clientId: typeof rawAs.clientId === 'string' ? rawAs.clientId.trim().slice(0, 256) : ''
     }
   }
 
@@ -277,6 +295,12 @@ function normalize(raw) {
     }
   })
 
+  const rawCollapsed = (raw && typeof raw.feedCollapsed === 'object' && raw.feedCollapsed) ? raw.feedCollapsed : {}
+  settings.feedCollapsed = {}
+  for (const [key, val] of Object.entries(rawCollapsed)) {
+    if (typeof key === 'string' && key) settings.feedCollapsed[key] = Boolean(val)
+  }
+
   settings.services = services
   return settings
 }
@@ -293,7 +317,9 @@ function load() {
 function save(settings) {
   const normalized = normalize(settings)
   try {
-    fs.writeFileSync(filePath(), JSON.stringify(normalized, null, 2), 'utf8')
+    // mode 0o600: owner read/write only — settings include OAuth client IDs and
+    // pinned intranet URLs that shouldn't be world-readable on shared systems.
+    fs.writeFileSync(filePath(), JSON.stringify(normalized, null, 2), { encoding: 'utf8', mode: 0o600 })
   } catch {
     // Non-fatal: settings just won't persist this session.
   }
