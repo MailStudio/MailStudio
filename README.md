@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/MailStudio/MailStudio/releases/latest"><img src="https://img.shields.io/badge/download-latest-0f6cbd?style=flat-square" alt="Download latest"></a>
-  <img src="https://img.shields.io/badge/version-1.2.0-1b2128?style=flat-square" alt="Version 1.2.0">
+  <img src="https://img.shields.io/badge/version-1.2.1-1b2128?style=flat-square" alt="Version 1.2.1">
   <img src="https://img.shields.io/badge/platform-macOS%20·%20Windows%20·%20Linux-1b2128?style=flat-square" alt="Platforms">
   <img src="https://img.shields.io/badge/scopes-read--only-34c759?style=flat-square" alt="Read-only scopes">
   <img src="https://img.shields.io/badge/license-MIT-1b2128?style=flat-square" alt="MIT License">
@@ -23,17 +23,17 @@ in a single window — with native notifications, smart link routing, and live
 sidebar feeds. No browser-tab sprawl. No context switching. One Microsoft sign-in.
 
 <p align="center">
-  <img src="docs/assets/screenshot-overview.svg" alt="MailStudio main window: a sidebar with live mail, calendar, and Asana feeds beside the Outlook reading pane" width="100%" />
+  <img src="docs/assets/screenshot-overview.png" alt="MailStudio main window: live sidebar feeds beside the embedded Outlook web app" width="100%" />
 </p>
 
 **[⬇ Download the latest release](https://github.com/MailStudio/MailStudio/releases/latest)**
 
 | Platform | File |
 |---|---|
-| macOS Apple Silicon | `MailStudio-1.2.0-arm64.dmg` |
-| macOS Intel | `MailStudio-1.2.0.dmg` |
-| Windows x64 | `MailStudio-Setup-1.2.0.exe` |
-| Windows ARM64 | `MailStudio-Setup-1.2.0-arm64.exe` |
+| macOS (Apple Silicon) | `MailStudio-1.2.1-arm64.dmg` |
+| Windows | `MailStudio-Setup-1.2.1.exe` |
+| Linux (AppImage) | `MailStudio-1.2.1.AppImage` |
+| Linux (Debian/Ubuntu) | `mailstudio_1.2.1_amd64.deb` |
 
 ---
 

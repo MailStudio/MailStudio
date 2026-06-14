@@ -14,8 +14,8 @@
       <stop offset="1" stop-color="#34c759" stop-opacity="0"/>
     </radialGradient>
     <linearGradient id="tile" x1="80" y1="106" x2="188" y2="214" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#1b2128"/>
-      <stop offset="1" stop-color="#0e1216"/>
+      <stop offset="0" stop-color="#1c2c4a"/>
+      <stop offset="1" stop-color="#11203a"/>
     </linearGradient>
     <linearGradient id="wm" x1="220" y1="0" x2="720" y2="0" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#f2f4f7"/>
@@ -28,20 +28,23 @@
   <rect width="1280" height="320" fill="url(#glow2)"/>
   <rect x="0.5" y="0.5" width="1279" height="319" rx="0" stroke="#ffffff" stroke-opacity="0.06"/>
 
-  <!-- App tile / logo mark -->
+  <!-- App tile / logo mark — two people peeking over an open envelope (matches icon.png) -->
   <g>
-    <rect x="80" y="106" width="108" height="108" rx="26" fill="url(#tile)" stroke="#0f6cbd" stroke-opacity="0.55"/>
-    <rect x="80" y="106" width="108" height="108" rx="26" stroke="#ffffff" stroke-opacity="0.06"/>
-    <!-- envelope -->
-    <rect x="106" y="132" width="56" height="44" rx="8" fill="none" stroke="#7fb6e8" stroke-width="3.4"/>
-    <path d="M109 140l25 18 25-18" fill="none" stroke="#7fb6e8" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
-    <!-- accent dot (notification) -->
-    <circle cx="162" cy="132" r="9" fill="#e5484d" stroke="#0b0d10" stroke-width="3"/>
+    <rect x="80" y="106" width="108" height="108" rx="26" fill="url(#tile)" stroke="#ffffff" stroke-opacity="0.08"/>
+    <!-- people (drawn first so the envelope overlaps their shoulders) -->
+    <path d="M110 162a13 13 0 0 1 26 0z" fill="#a7c6ea"/>
+    <circle cx="123" cy="146" r="11.5" fill="#a7c6ea"/>
+    <path d="M136 158a13 13 0 0 1 26 0z" fill="#f5c33d"/>
+    <circle cx="149" cy="141" r="11.5" fill="#f5c33d"/>
+    <!-- envelope body -->
+    <rect x="104" y="158" width="60" height="34" rx="8" fill="#3f7fe6"/>
+    <!-- flap chevron -->
+    <path d="M106 160l28 18 28-18" fill="none" stroke="#11203a" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
   </g>
 
   <!-- Wordmark -->
   <text x="214" y="172" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="58" font-weight="800" letter-spacing="-1.5">
-    <tspan fill="url(#wm)">Mail</tspan><tspan fill="#4a9eea">Studio</tspan>
+    <tspan fill="url(#wm)">Mail</tspan><tspan fill="#4a86e8">Studio</tspan>
   </text>
 
   <!-- Tagline -->

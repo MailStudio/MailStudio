@@ -14,7 +14,9 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        # macOS is built and signed locally (ad-hoc) and uploaded by hand, so CI
+        # only produces the Windows and Linux artifacts + their update metadata.
+        os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

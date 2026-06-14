@@ -1201,7 +1201,7 @@ function buildAppMenu() {
       label: APP_NAME,
       submenu: [
         { label: 'Open MailStudio', click: () => togglePanelWindow(true) },
-        { label: 'Check for Updates…', click: () => updater.check() },
+        { label: 'Check for Updates…', click: () => updater.check({ manual: true }) },
         { type: 'separator' },
         { label: 'Preferences…', accelerator: 'CmdOrCtrl+,', click: () => {
           settingsOpen = true
