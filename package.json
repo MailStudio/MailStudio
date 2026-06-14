@@ -23,7 +23,10 @@
     "menubar",
     "notifications"
   ],
-  "author": "MailStudio",
+  "author": {
+    "name": "MailStudio",
+    "email": "sntcodesmail@gmail.com"
+  },
   "license": "MIT",
   "homepage": "https://github.com/MailStudio/MailStudio#readme",
   "bugs": {
