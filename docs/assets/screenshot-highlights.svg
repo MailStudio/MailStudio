@@ -1,0 +1,91 @@
+<svg width="1200" height="300" viewBox="0 0 1200 300" fill="none" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-label="MailStudio highlights — focus timer, unified downloads, and native notifications">
+  <defs>
+    <radialGradient id="hg" cx="0.5" cy="0.1" r="0.9">
+      <stop offset="0" stop-color="#11151a"/>
+      <stop offset="1" stop-color="#050607"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="300" fill="url(#hg)"/>
+
+  <!-- ===== Card 1: Focus timer ===== -->
+  <g transform="translate(40,40)">
+    <rect width="360" height="220" rx="16" fill="#0c0e11" stroke="#ffffff" stroke-opacity="0.10"/>
+    <text x="24" y="40" font-size="12" font-weight="700" letter-spacing="1" fill="#69707b">FOCUS TIMER</text>
+
+    <!-- ring -->
+    <g transform="translate(96,118)">
+      <circle r="52" fill="none" stroke="#ffffff" stroke-opacity="0.10" stroke-width="6"/>
+      <circle r="52" fill="none" stroke="#34c759" stroke-width="6" stroke-linecap="round"
+              stroke-dasharray="327" stroke-dashoffset="98" transform="rotate(-90)"/>
+      <text y="-2" text-anchor="middle" font-size="22" font-weight="800" fill="#f2f4f7">18:42</text>
+      <text y="18" text-anchor="middle" font-size="11" font-weight="600" fill="#34c759">Focusing</text>
+    </g>
+    <!-- confetti specks -->
+    <g>
+      <rect x="186" y="40" width="8" height="5" rx="1.5" fill="#FF6B6B" transform="rotate(20 190 42)"/>
+      <rect x="300" y="64" width="7" height="5" rx="1.5" fill="#FFC300" transform="rotate(-25 303 66)"/>
+      <circle cx="330" cy="120" r="3.5" fill="#6C63FF"/>
+      <rect x="206" y="150" width="7" height="5" rx="1.5" fill="#00CFFF" transform="rotate(35 210 152)"/>
+      <circle cx="320" cy="176" r="3" fill="#FF6CAD"/>
+    </g>
+    <!-- duration control -->
+    <g transform="translate(176,150)">
+      <rect x="0" y="0" width="22" height="26" rx="6" fill="none" stroke="#ffffff" stroke-opacity="0.12"/>
+      <text x="11" y="18" text-anchor="middle" font-size="14" fill="#9aa1ab">−</text>
+      <rect x="26" y="0" width="60" height="26" rx="6" fill="#141414" stroke="#ffffff" stroke-opacity="0.12"/>
+      <text x="56" y="18" text-anchor="middle" font-size="12" font-weight="700" fill="#e9ebee">30</text>
+      <text x="94" y="18" font-size="10" font-weight="600" fill="#69707b">min</text>
+      <rect x="120" y="0" width="22" height="26" rx="6" fill="none" stroke="#ffffff" stroke-opacity="0.12"/>
+      <text x="131" y="18" text-anchor="middle" font-size="14" fill="#9aa1ab">+</text>
+    </g>
+  </g>
+
+  <!-- ===== Card 2: Downloads ===== -->
+  <g transform="translate(420,40)">
+    <rect width="360" height="220" rx="16" fill="#0c0e11" stroke="#ffffff" stroke-opacity="0.10"/>
+    <text x="24" y="40" font-size="13" font-weight="700" fill="#e9ebee">Downloads</text>
+    <text x="336" y="40" text-anchor="end" font-size="11.5" font-weight="600" fill="#69707b">Clear done</text>
+    <line x1="0" y1="54" x2="360" y2="54" stroke="#ffffff" stroke-opacity="0.08"/>
+
+    <!-- item 1: in progress -->
+    <rect x="22" y="70" width="32" height="36" rx="7" fill="#0f6cbd" fill-opacity="0.16"/>
+    <text x="38" y="92" text-anchor="middle" font-size="8.5" font-weight="800" fill="#4a9eea">PDF</text>
+    <text x="66" y="84" font-size="12.5" font-weight="600" fill="#e9ebee">Roadmap_Q3.pdf</text>
+    <text x="66" y="100" font-size="11" fill="#9aa1ab">1.4 MB of 2.4 MB · 820 KB/s</text>
+    <rect x="66" y="108" width="270" height="3" rx="1.5" fill="#ffffff" fill-opacity="0.10"/>
+    <rect x="66" y="108" width="158" height="3" rx="1.5" fill="#0f6cbd"/>
+
+    <!-- item 2: complete -->
+    <rect x="22" y="130" width="32" height="36" rx="7" fill="#34c759" fill-opacity="0.16"/>
+    <text x="38" y="152" text-anchor="middle" font-size="8.5" font-weight="800" fill="#34c759">PNG</text>
+    <text x="66" y="144" font-size="12.5" font-weight="600" fill="#e9ebee">mockup-final.png</text>
+    <text x="66" y="160" font-size="11" fill="#2faa57">3.1 MB · Done</text>
+    <g stroke="#9aa1ab" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="0.8">
+      <path d="M316 138v8a2 2 0 0 1-2 2h-8"/><path d="M322 142l6-6 6 6" transform="translate(-12,-2)"/>
+    </g>
+    <text x="24" y="196" font-size="11" fill="#69707b">Saved with the native dialog — you pick where every file lands.</text>
+  </g>
+
+  <!-- ===== Card 3: Notification ===== -->
+  <g transform="translate(800,40)">
+    <rect width="360" height="220" rx="16" fill="#0c0e11" stroke="#ffffff" stroke-opacity="0.10"/>
+    <text x="24" y="40" font-size="12" font-weight="700" letter-spacing="1" fill="#69707b">NATIVE NOTIFICATIONS</text>
+
+    <!-- toast -->
+    <rect x="24" y="58" width="312" height="92" rx="14" fill="#1b1d21" stroke="#ffffff" stroke-opacity="0.12"/>
+    <rect x="40" y="74" width="40" height="40" rx="9" fill="#0f6cbd"/>
+    <g stroke="#ffffff" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="50" y="86" width="20" height="16" rx="2.5"/><path d="M51 88l9 6 9-6"/>
+    </g>
+    <text x="94" y="84" font-size="12.5" font-weight="750" fill="#f2f4f7">MailStudio</text>
+    <text x="320" y="84" text-anchor="end" font-size="10.5" fill="#69707b">now</text>
+    <text x="94" y="104" font-size="12.5" font-weight="600" fill="#e9ebee">Alex Morgan</text>
+    <text x="94" y="122" font-size="11.5" fill="#9aa1ab">Q3 roadmap review — agenda</text>
+
+    <!-- second toast (calendar) -->
+    <rect x="40" y="160" width="296" height="44" rx="12" fill="#141619" stroke="#ffffff" stroke-opacity="0.08" opacity="0.85"/>
+    <rect x="54" y="172" width="20" height="20" rx="5" fill="#34c759" fill-opacity="0.22"/>
+    <text x="86" y="180" font-size="11.5" font-weight="650" fill="#cfd6df">Product sync starts in 5 min</text>
+    <text x="86" y="196" font-size="10.5" fill="#69707b">Click to open Calendar</text>
+  </g>
+</svg>

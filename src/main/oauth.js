@@ -1,10 +1,11 @@
 const crypto = require('crypto')
 const { BrowserWindow, session } = require('electron')
 
-// Generic OAuth2 Authorization-Code-with-PKCE engine for desktop. No client
-// secret is ever used or stored — both Microsoft (public client) and Asana
-// (PKCE-enabled native app) issue tokens to a confidential-secret-free flow,
-// which is the only safe model for code that ships in a public GitHub repo.
+// Generic OAuth2 Authorization-Code-with-PKCE engine for desktop. Microsoft is a
+// public client: PKCE replaces the client secret entirely, so none is used. Asana
+// is different — its token endpoint requires a `client_secret` *in addition to*
+// PKCE, so callers pass one through for Asana. The secret is never baked into the
+// repo: each user supplies their own and it's sealed in the OS keychain.
 //
 // The redirect is captured by intercepting the auth popup's navigation to the
 // redirect URI (RFC 8252 style, but in-window) — so there's no loopback HTTP
@@ -51,7 +52,13 @@ const PROVIDERS = {
   },
   asana: {
     label: 'Asana',
-    scope: 'default',
+    // Read-only, least-privilege scopes. MailStudio only READS your identity and
+    // assigned tasks for the sidebar feed (GET /users/me, GET /tasks) — it never
+    // writes through the API. (The "New task" button drives Asana's own web UI in
+    // the service tab via its cookie session, not this token.) Note: this means
+    // the Asana app must use GRANULAR scopes, not "Full permissions" — enable
+    // read access for Tasks, Users, and Workspaces in the app's OAuth section.
+    scope: 'openid email profile users:read tasks:read workspaces:read',
     authorizePath: () => 'https://app.asana.com/-/oauth_authorize',
     tokenPath: () => 'https://app.asana.com/-/oauth_token'
   }
@@ -90,7 +97,7 @@ function isProvider(name) {
 // Open the consent popup and resolve with a tokenSet. The popup shares the
 // given session partition, so for Microsoft the existing signed-in web session
 // makes consent a single click (or fully silent when already consented).
-function authorize({ provider, clientId, tenant, partition, parentWindow }) {
+function authorize({ provider, clientId, clientSecret, tenant, partition, parentWindow }) {
   return new Promise((resolve, reject) => {
     if (!isProvider(provider)) {
       reject(new Error(`Unknown provider: ${provider}`))
@@ -215,7 +222,7 @@ function authorize({ provider, clientId, tenant, partition, parentWindow }) {
         finish(reject, new Error('No authorization code returned.'))
         return
       }
-      exchangeCode({ def, tenant, clientId, code, verifier: pkce.verifier })
+      exchangeCode({ def, tenant, clientId, clientSecret, code, verifier: pkce.verifier })
         .then((tokenSet) => finish(resolve, tokenSet))
         .catch((e) => finish(reject, e))
     }
@@ -275,19 +282,23 @@ async function postForm(url, form) {
   return json
 }
 
-function exchangeCode({ def, tenant, clientId, code, verifier }) {
-  return postForm(def.tokenPath(tenant), {
+function exchangeCode({ def, tenant, clientId, clientSecret, code, verifier }) {
+  const form = {
     grant_type: 'authorization_code',
     code,
     redirect_uri: REDIRECT_URI,
     client_id: clientId,
     code_verifier: verifier
-  }).then((json) => toTokenSet(json))
+  }
+  // Asana requires the client secret here even with PKCE; Microsoft (public
+  // client) must NOT receive one. Only include it when the caller supplies it.
+  if (clientSecret) form.client_secret = clientSecret
+  return postForm(def.tokenPath(tenant), form).then((json) => toTokenSet(json))
 }
 
 // Exchange a stored refresh token for a fresh access token. Throws if the grant
 // has been revoked/expired so the caller can drop to a disconnected state.
-async function refreshTokens({ provider, clientId, tenant, refreshToken }) {
+async function refreshTokens({ provider, clientId, clientSecret, tenant, refreshToken }) {
   if (!isProvider(provider)) {
     throw new Error(`Unknown provider: ${provider}`)
   }
@@ -295,12 +306,15 @@ async function refreshTokens({ provider, clientId, tenant, refreshToken }) {
     throw new Error('No refresh token available.')
   }
   const def = PROVIDERS[provider]
-  const json = await postForm(def.tokenPath(tenant), {
+  const form = {
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
     client_id: clientId,
     scope: def.scope
-  })
+  }
+  // Same asymmetry as exchangeCode: Asana's refresh needs the client secret too.
+  if (clientSecret) form.client_secret = clientSecret
+  const json = await postForm(def.tokenPath(tenant), form)
   return toTokenSet(json, refreshToken)
 }
 

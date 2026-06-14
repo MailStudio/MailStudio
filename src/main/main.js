@@ -165,6 +165,48 @@ let wantPrewarm = false
 // User-dragged sidebar width; initialised from settings in app.whenReady().
 let sidebarExpandedWidth = 280
 
+// Per-service page-zoom level (Chromium zoomLevel scale; 0 = 100%). We track it
+// ourselves so trackpad pinch and the Zoom menu share one source of truth and so
+// pinch can be dampened (see onServiceZoomChanged).
+const zoomLevels = new Map()
+// Pinch sensitivity: the zoomLevel delta applied per pinch "tick". Chromium's
+// own step is ~0.25–0.5, which feels like the page leaps when pinching — this
+// smaller value makes trackpad zoom gradual. The keyboard Zoom In/Out menu uses
+// the larger ZOOM_MENU_STEP so ⌘+/⌘- still move in satisfying increments.
+const ZOOM_PINCH_STEP = 0.06
+const ZOOM_MENU_STEP = 0.5
+const ZOOM_MIN = -2.5  // ≈ 40%
+const ZOOM_MAX = 3.0   // ≈ 300%
+
+function clampZoom(level) {
+  return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, level))
+}
+
+// Apply an absolute zoom level to a service's view and remember it.
+function setServiceZoom(key, level) {
+  const next = clampZoom(level)
+  zoomLevels.set(key, next)
+  const view = serviceViews.get(key)
+  if (view && !view.webContents.isDestroyed()) {
+    view.webContents.setZoomLevel(next)
+  }
+}
+
+// Step a service's zoom by a delta (used by the Zoom In/Out/Reset menu items so
+// they stay in sync with the pinch-tracked level).
+function stepServiceZoom(key, delta) {
+  if (delta === 0) { setServiceZoom(key, 0); return }
+  setServiceZoom(key, (zoomLevels.get(key) || 0) + delta)
+}
+
+// Trackpad pinch / ⌃-scroll handler. Chromium has already applied its own large
+// step by the time this fires; we override it with our tracked level moved by a
+// small step instead, so the net visible change per tick is gentle.
+function onServiceZoomChanged(key, direction) {
+  const base = zoomLevels.get(key) || 0
+  setServiceZoom(key, base + (direction === 'in' ? ZOOM_PINCH_STEP : -ZOOM_PINCH_STEP))
+}
+
 // Download tracking: every download across all session partitions is registered
 // here so the panel shows a unified list with OS-native save dialog + progress.
 let downloadIdSeq = 0
@@ -627,10 +669,12 @@ function diffAndNotifyMail(items, unreadCount) {
   lastMailNotificationCount = unreadCount
 
   if (!countWentUp) return
-  if (!settings.onboarded) return
-  if (!notif.mail) return
-  if (isQuietHours()) return
-  if (isSnoozed('mail')) return
+  // From here on a new email arrived and we WOULD notify — log any gate that
+  // suppresses it, so "notifications aren't working" has a visible reason.
+  if (!settings.onboarded) { console.warn('[notify] mail suppressed: not onboarded (connect an account / finish setup)'); return }
+  if (!notif.mail) { console.warn('[notify] mail suppressed: Mail notifications toggled off in Settings'); return }
+  if (isQuietHours()) { console.warn('[notify] mail suppressed: quiet hours active'); return }
+  if (isSnoozed('mail')) { console.warn('[notify] mail suppressed: Mail is snoozed'); return }
   if (panelWindow && panelWindow.isFocused() && serviceFeeds[activeServiceKey]?.kind === 'mail') return
 
   const newItems = items.filter((item) => item.id && !notifiedEmailIds.has(item.id))
@@ -704,11 +748,13 @@ function maybeNotifyTeams(unreadCount) {
   const prev = lastTeamsNotificationCount
   lastTeamsNotificationCount = unreadCount
   if (unreadCount <= prev) return
-  if (!settings.onboarded) return
+  // A genuinely higher unread count means we WOULD notify — log any gate that
+  // suppresses it so "Teams notifications aren't working" has a visible reason.
+  if (!settings.onboarded) { console.warn('[notify] teams suppressed: not onboarded (connect an account / finish setup)'); return }
   const notif = settings.notif || {}
-  if (!notif.teams) return
-  if (isQuietHours()) return
-  if (isSnoozed('teams')) return
+  if (!notif.teams) { console.warn('[notify] teams suppressed: Teams notifications toggled off in Settings'); return }
+  if (isQuietHours()) { console.warn('[notify] teams suppressed: quiet hours active'); return }
+  if (isSnoozed('teams')) { console.warn('[notify] teams suppressed: Teams is snoozed'); return }
   if (panelWindow && panelWindow.isFocused() && activeServiceKey === 'teams') return
   const delta = unreadCount - prev
   fireNotification(
@@ -733,11 +779,13 @@ function diffAndNotifyAsana(items) {
   for (const item of items) { if (item.id) notifiedTaskIds.add(item.id) }
   capBaselineSet(notifiedTaskIds)
   if (!newItems.length) return
-  if (!settings.onboarded) return
+  // New task(s) assigned — log any gate that suppresses the notification so the
+  // reason is visible rather than silently swallowed.
+  if (!settings.onboarded) { console.warn('[notify] asana suppressed: not onboarded (connect an account / finish setup)'); return }
   const notif = settings.notif || {}
-  if (!notif.asana) return
-  if (isQuietHours()) return
-  if (isSnoozed('asana')) return
+  if (!notif.asana) { console.warn('[notify] asana suppressed: Asana notifications toggled off in Settings'); return }
+  if (isQuietHours()) { console.warn('[notify] asana suppressed: quiet hours active'); return }
+  if (isSnoozed('asana')) { console.warn('[notify] asana suppressed: Asana is snoozed'); return }
 
   const open = () => { showPanelWindow(); showService('asana') }
   if (newItems.length === 1) {
@@ -762,21 +810,31 @@ function capBaselineSet(set) {
 // only within the reminder window so we don't surprise-notify the whole agenda.
 const CALENDAR_REMINDER_MS = 5 * 60 * 1000
 function maybeNotifyCalendar(items) {
-  if (!settings.onboarded) return
-  const notif = settings.notif || {}
-  if (!notif.calendar) return
-  if (isQuietHours()) return
-  if (isSnoozed('calendar')) return
   const now = Date.now()
-  for (const item of items) {
-    if (item.cancelled || !item.id || !item.startIso || remindedEventIds.has(item.id)) continue
+  // Events inside the reminder window that haven't already fired. Computed first
+  // so the suppression gates (and their logging) only run when there's actually
+  // a reminder to give — otherwise every 25s poll would spam the log.
+  const due = items.filter((item) => {
+    if (item.cancelled || !item.id || !item.startIso || remindedEventIds.has(item.id)) return false
     const start = new Date(String(item.startIso).replace(/(\.\d+)?$/, '')).getTime()
-    if (Number.isNaN(start)) continue
+    if (Number.isNaN(start)) return false
     const delta = start - now
-    if (delta <= 0 || delta > CALENDAR_REMINDER_MS) continue
+    return delta > 0 && delta <= CALENDAR_REMINDER_MS
+  })
+  if (!due.length) return
+  // A reminder is due — log any gate that suppresses it. Gates return before
+  // marking the events reminded, so they fire once the gate clears (if still
+  // inside the window).
+  if (!settings.onboarded) { console.warn('[notify] calendar suppressed: not onboarded (connect an account / finish setup)'); return }
+  const notif = settings.notif || {}
+  if (!notif.calendar) { console.warn('[notify] calendar suppressed: Calendar notifications toggled off in Settings'); return }
+  if (isQuietHours()) { console.warn('[notify] calendar suppressed: quiet hours active'); return }
+  if (isSnoozed('calendar')) { console.warn('[notify] calendar suppressed: Calendar is snoozed'); return }
+  for (const item of due) {
+    const start = new Date(String(item.startIso).replace(/(\.\d+)?$/, '')).getTime()
     remindedEventIds.add(item.id)
     capBaselineSet(remindedEventIds)
-    const mins = Math.max(1, Math.round(delta / 60000))
+    const mins = Math.max(1, Math.round((start - now) / 60000))
     fireNotification(
       { title: 'Upcoming event', body: `${item.title || 'Event'} starts in ${mins} min` },
       () => { showPanelWindow(); showService('calendar') }
@@ -1206,9 +1264,11 @@ function buildAppMenu() {
           if (wc && !wc.isDestroyed()) wc.reloadIgnoringCache()
         } },
         { role: 'togglefullscreen' },
-        { role: 'resetZoom' },
-        { role: 'zoomIn' },
-        { role: 'zoomOut' }
+        { label: 'Actual Size', accelerator: 'CmdOrCtrl+0', click: () => stepServiceZoom(activeServiceKey, 0) },
+        { label: 'Zoom In', accelerator: 'CmdOrCtrl+Plus', click: () => stepServiceZoom(activeServiceKey, ZOOM_MENU_STEP) },
+        // Also bind ⌘= (zoom-in without Shift) the way browsers do.
+        { label: 'Zoom In ', accelerator: 'CmdOrCtrl+=', click: () => stepServiceZoom(activeServiceKey, ZOOM_MENU_STEP), visible: false },
+        { label: 'Zoom Out', accelerator: 'CmdOrCtrl+-', click: () => stepServiceZoom(activeServiceKey, -ZOOM_MENU_STEP) }
       ]
     },
     { label: 'Window', role: 'windowMenu' },
@@ -1527,6 +1587,12 @@ function createServiceView(service) {
   view.webContents.setUserAgent(getAppUserAgent())
   view.webContents.setMaxListeners(20)
 
+  // Dampen trackpad pinch zoom: override Chromium's coarse per-tick step with a
+  // small one so the page doesn't leap when pinching (see onServiceZoomChanged).
+  view.webContents.on('zoom-changed', (_event, direction) => {
+    onServiceZoomChanged(service.key, direction)
+  })
+
   view.webContents.setWindowOpenHandler(({ url }) => {
     // Microsoft auth/consent popups (used by Teams, SharePoint, etc.) MUST open
     // as a real child window — denying them and kicking to the browser breaks
@@ -1663,6 +1729,10 @@ function createServiceView(service) {
   view.webContents.on('did-finish-load', () => {
     // A reload resets the webContents mute flag, so re-assert it if still snoozed.
     applyServiceMute(service.key)
+    // Navigation/reload resets Chromium's zoom to 100%; re-apply the user's
+    // tracked level so their chosen zoom survives reloads and SSO redirects.
+    const tracked = zoomLevels.get(service.key)
+    if (tracked) view.webContents.setZoomLevel(tracked)
     view.webContents.insertCSS(`
       ::-webkit-scrollbar { width: 11px; height: 11px; }
       ::-webkit-scrollbar-thumb { background: rgba(140, 150, 165, 0.45); border-radius: 999px; }
@@ -2270,7 +2340,10 @@ function refreshFeed(key) {
   }
   // When the provider behind this feed is connected, prefer the API entirely.
   if (connections.feedIsLive(feed.kind)) {
-    refreshFeedFromApi(key, feed).catch(() => {
+    refreshFeedFromApi(key, feed).catch((err) => {
+      // Surface the real reason — a 403 (missing Graph consent), 5xx, or parse
+      // error otherwise vanishes here and looks like "the API just doesn't work".
+      console.warn(`[feed] ${key} API refresh failed:`, (err && err.message) || err)
       if (!Array.isArray(feed.items) || !feed.items.length) {
         feed.state = 'error'
         pushSnapshot()
@@ -2990,6 +3063,17 @@ function registerIpc() {
         break
       case 'save-connections':
         if (command.connections && typeof command.connections === 'object') {
+          // The Asana client secret is a credential, so seal it in the encrypted
+          // vault rather than letting it reach the plaintext settings file
+          // (settings-store's normalize keeps only clientId/tenant anyway). An
+          // empty/absent value means "leave the stored secret unchanged" so a
+          // client-ID edit — or the auto-save fired right before Connect — never
+          // wipes a previously saved secret.
+          const asanaSecret =
+            command.connections.asana && typeof command.connections.asana.clientSecret === 'string'
+              ? command.connections.asana.clientSecret.trim()
+              : ''
+          if (asanaSecret) connections.setAsanaSecret(asanaSecret)
           settings = store.save({ ...settings, connections: command.connections })
           connections.setConfig(settings.connections)
           pushSnapshot()

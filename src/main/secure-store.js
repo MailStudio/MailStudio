@@ -9,8 +9,11 @@ const { app, safeStorage } = require('electron')
 // persist secrets in the clear.
 //
 // Shape on disk (after decryption):
-//   { microsoft: <tokenSet>|null, asana: <tokenSet>|null }
+//   { microsoft: <tokenSet>|null, asana: <tokenSet>|null, secrets: { <name>: <string> } }
 // where a tokenSet is { accessToken, refreshToken, expiresAt, scope, account }.
+// `secrets` holds non-token credentials that still must never touch plaintext —
+// notably the Asana OAuth client secret (Asana's token endpoint requires it even
+// under PKCE, unlike Microsoft's public-client flow).
 
 function vaultPath() {
   return path.join(app.getPath('userData'), 'mailstudio-credentials.bin')
@@ -29,7 +32,7 @@ function encryptionAvailable() {
 let cache = null
 
 function emptyVault() {
-  return { microsoft: null, asana: null }
+  return { microsoft: null, asana: null, secrets: {} }
 }
 
 function load() {
@@ -110,6 +113,29 @@ function clearToken(provider) {
   if (!persist()) warnPersistFailed()
 }
 
+// Encrypted, non-token credentials (e.g. an OAuth client secret). Stored in the
+// same vault so they share safeStorage encryption and the memory-only fallback.
+function getSecret(name) {
+  const vault = load()
+  const secrets = vault.secrets && typeof vault.secrets === 'object' ? vault.secrets : null
+  return secrets && typeof secrets[name] === 'string' ? secrets[name] : null
+}
+
+function setSecret(name, value) {
+  const vault = load()
+  if (!vault.secrets || typeof vault.secrets !== 'object') vault.secrets = {}
+  if (typeof value === 'string' && value) {
+    vault.secrets[name] = value
+  } else {
+    delete vault.secrets[name]
+  }
+  if (!persist()) warnPersistFailed()
+}
+
+function hasSecret(name) {
+  return Boolean(getSecret(name))
+}
+
 function clearAll() {
   cache = emptyVault()
   try {
@@ -124,5 +150,8 @@ module.exports = {
   getToken,
   setToken,
   clearToken,
+  getSecret,
+  setSecret,
+  hasSecret,
   clearAll
 }

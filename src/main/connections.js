@@ -89,7 +89,21 @@ function getConfig() {
 }
 
 function isConfigured(provider) {
-  return Boolean(config[provider] && config[provider].clientId)
+  if (!(config[provider] && config[provider].clientId)) return false
+  // Asana's token endpoint requires a client secret (even with PKCE), so it's
+  // only fully configured once both the client ID and the secret are present.
+  if (provider === 'asana') return secureStore.hasSecret('asana')
+  return true
+}
+
+// The Asana OAuth client secret lives in the encrypted vault, never in the
+// plaintext settings file and never sent back to the renderer.
+function setAsanaSecret(value) {
+  secureStore.setSecret('asana', typeof value === 'string' ? value.trim() : '')
+}
+
+function hasAsanaSecret() {
+  return secureStore.hasSecret('asana')
 }
 
 function isConnected(provider) {
@@ -107,6 +121,10 @@ function getStatus() {
     asana: {
       ...state.asana,
       configured: isConfigured('asana'),
+      // Asana needs a client secret in addition to the client ID; surface whether
+      // one is stored so the setup UI can reflect "saved" without exposing it.
+      secretRequired: true,
+      secretSet: hasAsanaSecret(),
       feeds: PROVIDER_FEEDS.asana
     },
     encryptionAvailable: secureStore.encryptionAvailable()
@@ -144,6 +162,7 @@ async function connect(provider, { parentWindow } = {}) {
     const tokenSet = await oauth.authorize({
       provider,
       clientId: config[provider].clientId,
+      clientSecret: provider === 'asana' ? secureStore.getSecret('asana') : undefined,
       tenant: provider === 'microsoft' ? config.microsoft.tenant : undefined,
       partition: partitionForProvider(provider),
       parentWindow
@@ -241,6 +260,7 @@ async function refreshAccessToken(provider, token) {
     const refreshed = await oauth.refreshTokens({
       provider,
       clientId: config[provider].clientId,
+      clientSecret: provider === 'asana' ? secureStore.getSecret('asana') : undefined,
       tenant: provider === 'microsoft' ? config.microsoft.tenant : undefined,
       refreshToken: token.refreshToken
     })
@@ -309,9 +329,13 @@ async function withToken(provider, fn) {
           setStatus(provider, STATUS.ERROR, { error: 'Session expired — reconnect.' })
           return null
         }
+        console.warn(`[api] ${provider} request failed after refresh:`, err2 && err2.message)
         throw err2
       }
     }
+    // Non-auth, non-throttle failure (e.g. 403 missing consent, 5xx, network).
+    // Log it — these otherwise disappear into the feed's empty catch handler.
+    console.warn(`[api] ${provider} request failed:`, err && err.message)
     throw err
   }
 }
@@ -374,6 +398,8 @@ module.exports = {
   init,
   setConfig,
   getConfig,
+  setAsanaSecret,
+  hasAsanaSecret,
   isConfigured,
   isConnected,
   getStatus,

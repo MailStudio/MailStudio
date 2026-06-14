@@ -265,7 +265,7 @@
               <circle class="focus-track" cx="22" cy="22" r="19" />
               <circle class="focus-prog" id="focus-prog" cx="22" cy="22" r="19" />
             </svg>
-            <span class="focus-time" id="focus-time">25:00</span>
+            <span class="focus-time" id="focus-time">30:00</span>
           </div>
           <div class="focus-controls">
             <div class="focus-top">
@@ -279,12 +279,12 @@
                 </button>
               </div>
             </div>
-            <div class="focus-presets">
-              <button class="focus-preset" data-mins="15" title="15 minute session">15m</button>
-              <button class="focus-preset active" data-mins="25" title="25 minute session">25m</button>
-              <button class="focus-preset" data-mins="45" title="45 minute session">45m</button>
-              <input class="focus-custom" id="focus-custom" type="number" min="1" max="240"
-                     placeholder="min" title="Custom duration in minutes — press Enter to set" />
+            <div class="focus-duration">
+              <button class="focus-step" id="focus-minus" type="button" title="Less time" tabindex="-1">−</button>
+              <input class="focus-custom" id="focus-custom" type="number" min="1" max="240" value="30"
+                     title="Session length in minutes — press Enter to set" />
+              <span class="focus-custom-unit">min</span>
+              <button class="focus-step" id="focus-plus" type="button" title="More time" tabindex="-1">+</button>
             </div>
           </div>
         </div>

@@ -63,6 +63,20 @@ test('connections trim client IDs and default the Microsoft tenant', () => {
   assert.equal(settings.connections.asana.clientId, 'xyz')
 })
 
+test('connections never persist an Asana client secret in plaintext', () => {
+  // The secret is routed to the encrypted vault by main.js; normalize() must
+  // strip it so it can never leak into the plaintext settings file even if a
+  // caller (or a tampered file) includes one.
+  const settings = store.normalize({
+    connections: {
+      asana: { clientId: 'xyz', clientSecret: 'super-secret-value' }
+    }
+  })
+  assert.equal(settings.connections.asana.clientId, 'xyz')
+  assert.equal('clientSecret' in settings.connections.asana, false)
+  assert.equal(JSON.stringify(settings).includes('super-secret-value'), false)
+})
+
 test('notification toggles default on, explicit false respected', () => {
   const settings = store.normalize({ notif: { mail: false } })
   assert.equal(settings.notif.mail, false)

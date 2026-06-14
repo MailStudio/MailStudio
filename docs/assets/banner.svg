@@ -1,0 +1,82 @@
+<svg width="1280" height="320" viewBox="0 0 1280 320" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MailStudio — Outlook, Teams and your Microsoft 365 world in one fast, private desktop app">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="320" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0b0d10"/>
+      <stop offset="1" stop-color="#040506"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.82" cy="0.2" r="0.7">
+      <stop offset="0" stop-color="#0f6cbd" stop-opacity="0.38"/>
+      <stop offset="0.55" stop-color="#0f6cbd" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#0f6cbd" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow2" cx="0.12" cy="0.9" r="0.6">
+      <stop offset="0" stop-color="#34c759" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#34c759" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="tile" x1="80" y1="106" x2="188" y2="214" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1b2128"/>
+      <stop offset="1" stop-color="#0e1216"/>
+    </linearGradient>
+    <linearGradient id="wm" x1="220" y1="0" x2="720" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f2f4f7"/>
+      <stop offset="1" stop-color="#cfd6df"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="320" rx="0" fill="url(#bg)"/>
+  <rect width="1280" height="320" fill="url(#glow)"/>
+  <rect width="1280" height="320" fill="url(#glow2)"/>
+  <rect x="0.5" y="0.5" width="1279" height="319" rx="0" stroke="#ffffff" stroke-opacity="0.06"/>
+
+  <!-- App tile / logo mark -->
+  <g>
+    <rect x="80" y="106" width="108" height="108" rx="26" fill="url(#tile)" stroke="#0f6cbd" stroke-opacity="0.55"/>
+    <rect x="80" y="106" width="108" height="108" rx="26" stroke="#ffffff" stroke-opacity="0.06"/>
+    <!-- envelope -->
+    <rect x="106" y="132" width="56" height="44" rx="8" fill="none" stroke="#7fb6e8" stroke-width="3.4"/>
+    <path d="M109 140l25 18 25-18" fill="none" stroke="#7fb6e8" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- accent dot (notification) -->
+    <circle cx="162" cy="132" r="9" fill="#e5484d" stroke="#0b0d10" stroke-width="3"/>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="214" y="172" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="58" font-weight="800" letter-spacing="-1.5">
+    <tspan fill="url(#wm)">Mail</tspan><tspan fill="#4a9eea">Studio</tspan>
+  </text>
+
+  <!-- Tagline -->
+  <text x="216" y="210" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="20" font-weight="500" fill="#9aa1ab">Outlook, Teams &amp; your Microsoft 365 world — one fast, private desktop app.</text>
+
+  <!-- Feature chips -->
+  <g font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#aab2be">
+    <g>
+      <rect x="216" y="236" width="96" height="30" rx="15" fill="#ffffff" fill-opacity="0.05" stroke="#ffffff" stroke-opacity="0.10"/>
+      <text x="264" y="256" text-anchor="middle">Outlook</text>
+    </g>
+    <g>
+      <rect x="320" y="236" width="84" height="30" rx="15" fill="#ffffff" fill-opacity="0.05" stroke="#ffffff" stroke-opacity="0.10"/>
+      <text x="362" y="256" text-anchor="middle">Teams</text>
+    </g>
+    <g>
+      <rect x="412" y="236" width="100" height="30" rx="15" fill="#ffffff" fill-opacity="0.05" stroke="#ffffff" stroke-opacity="0.10"/>
+      <text x="462" y="256" text-anchor="middle">Calendar</text>
+    </g>
+    <g>
+      <rect x="520" y="236" width="80" height="30" rx="15" fill="#ffffff" fill-opacity="0.05" stroke="#ffffff" stroke-opacity="0.10"/>
+      <text x="560" y="256" text-anchor="middle">To Do</text>
+    </g>
+    <g>
+      <rect x="608" y="236" width="80" height="30" rx="15" fill="#ffffff" fill-opacity="0.05" stroke="#ffffff" stroke-opacity="0.10"/>
+      <text x="648" y="256" text-anchor="middle">Asana</text>
+    </g>
+  </g>
+
+  <!-- Right-side badge: private / read-only -->
+  <g transform="translate(992,118)" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+    <rect x="0" y="0" width="208" height="84" rx="16" fill="#ffffff" fill-opacity="0.04" stroke="#ffffff" stroke-opacity="0.10"/>
+    <circle cx="30" cy="42" r="15" fill="none" stroke="#34c759" stroke-width="2.6"/>
+    <path d="M24 42l4.5 4.5L37 37" fill="none" stroke="#34c759" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="56" y="38" font-size="14.5" font-weight="700" fill="#e9ebee">Read-only &amp; private</text>
+    <text x="56" y="58" font-size="12.5" font-weight="500" fill="#9aa1ab">PKCE · no secrets · no servers</text>
+  </g>
+</svg>

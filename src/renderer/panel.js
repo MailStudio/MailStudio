@@ -1228,7 +1228,9 @@ function renderConnCards(snapshot, container) {
            <p class="conn-field-hint">Leave as <code>common</code> for personal and work/school accounts. If sign-in fails, paste your Directory (tenant) ID from Azure → App registration → Overview.</p>
            <a class="conn-help conn-field-help" href="#" data-ext="${meta.helpTenant}">Find my tenant ID</a>`
         : `<label class="conn-field"><span>Asana client ID</span><input type="text" class="cfg-clientId" spellcheck="false" placeholder="1200000000000000" value="${escapeHtml(pcfg.clientId || '')}"></label>
-           <a class="conn-help conn-field-help" href="#" data-ext="${meta.helpClientId}">Where do I get the client ID?</a>`
+           <a class="conn-help conn-field-help" href="#" data-ext="${meta.helpClientId}">Where do I get the client ID?</a>
+           <label class="conn-field"><span>Asana client secret</span><input type="password" class="cfg-clientSecret" spellcheck="false" autocomplete="off" placeholder="${st.secretSet ? '•••••••• saved — leave blank to keep' : "Paste your app's client secret"}" value=""></label>
+           <p class="conn-field-hint">Asana requires the app's <strong>client secret</strong> too (Microsoft doesn't). Find it in your Asana app under <em>Basic information</em>. It's sealed in your OS keychain — never stored in plaintext.</p>`
 
     card.innerHTML = `
       <div class="conn-head">
@@ -1240,7 +1242,7 @@ function renderConnCards(snapshot, container) {
         <span class="conn-state conn-state-${st.status}">${escapeHtml(STATUS_TEXT[st.status])}</span>
       </div>
       ${st.error ? `<div class="conn-error">${escapeHtml(st.error)}</div>` : ''}
-      ${!st.configured ? `<div class="conn-hint">Add your ${meta.label} client ID below to enable Connect.</div>` : ''}
+      ${!st.configured ? `<div class="conn-hint">Add your ${meta.label} ${provider === 'asana' ? 'client ID and secret' : 'client ID'} below to enable Connect.</div>` : ''}
       <div class="conn-actions">
         <button class="conn-btn ${connected ? 'ghost' : 'primary'} conn-action" data-action="${connected ? 'disconnect' : 'connect'}" data-configured="${st.configured ? '1' : ''}" ${connecting ? 'disabled' : ''}>
           ${connected ? 'Disconnect' : connecting ? 'Connecting…' : 'Connect'}
@@ -1320,7 +1322,9 @@ function readConnConfig(container) {
   }
   return {
     microsoft: { clientId: read('microsoft', '.cfg-clientId'), tenant: read('microsoft', '.cfg-tenant') || 'common' },
-    asana: { clientId: read('asana', '.cfg-clientId') }
+    // clientSecret is blank unless the user typed a new one; main.js treats an
+    // empty value as "keep the existing stored secret" (never wiped on re-save).
+    asana: { clientId: read('asana', '.cfg-clientId'), clientSecret: read('asana', '.cfg-clientSecret') }
   }
 }
 
@@ -1566,7 +1570,9 @@ const focusProg = document.getElementById('focus-prog')
 const focusToggleIcon = document.getElementById('focus-toggle-icon')
 const RING_CIRC = 2 * Math.PI * 19
 focusProg.style.strokeDasharray = String(RING_CIRC)
-let focusTotal = 25 * 60
+const FOCUS_MIN_MINUTES = 1
+const FOCUS_MAX_MINUTES = 240
+let focusTotal = 30 * 60
 let focusRemaining = focusTotal
 let focusRunning = false
 let focusInterval = null
@@ -1583,15 +1589,18 @@ function paintFocus() {
   focusToggleIcon.innerHTML = focusRunning ? PAUSE_ICON : PLAY_ICON
   focusLabelEl.textContent = focusRemaining === 0 ? 'Done!' : focusRunning ? 'Focusing' : focusRemaining === focusTotal ? 'Focus' : 'Paused'
   document.getElementById('focus').classList.toggle('running', focusRunning)
-  // Highlight the matching preset; when custom duration is active, reflect that.
-  const PRESET_MINS = [15, 25, 45]
-  const currentMins = Math.round(focusTotal / 60)
-  const isPreset = PRESET_MINS.includes(currentMins)
-  for (const btn of document.querySelectorAll('.focus-preset')) {
-    btn.classList.toggle('active', Number(btn.dataset.mins) === currentMins)
-  }
+  // Keep the duration input in sync with the current session length (unless the
+  // user is mid-edit). It's the only duration control, so the row always fits
+  // any sidebar width. Disabled while running so the countdown isn't edited live.
   const customEl = document.getElementById('focus-custom')
-  if (customEl) customEl.classList.toggle('custom-active', !isPreset && focusTotal !== 25 * 60)
+  if (customEl) {
+    if (document.activeElement !== customEl) customEl.value = String(Math.round(focusTotal / 60))
+    customEl.disabled = focusRunning
+  }
+  for (const id of ['focus-minus', 'focus-plus']) {
+    const b = document.getElementById(id)
+    if (b) b.disabled = focusRunning
+  }
 }
 
 function tickFocus() {
@@ -1623,39 +1632,43 @@ document.getElementById('focus-reset').addEventListener('click', () => {
   focusRemaining = focusTotal
   paintFocus()
 })
-for (const btn of document.querySelectorAll('.focus-preset')) {
-  btn.addEventListener('click', () => {
-    const mins = Number(btn.dataset.mins)
-    if (!mins) return
-    focusRunning = false
-    clearInterval(focusInterval)
-    focusTotal = mins * 60
-    focusRemaining = focusTotal
-    const customEl = document.getElementById('focus-custom')
-    if (customEl) { customEl.value = ''; customEl.classList.remove('custom-active') }
-    paintFocus()
-  })
+// Set the session length to a given minute count (clamped), resetting the timer.
+function setFocusMinutes(mins) {
+  const clamped = Math.max(FOCUS_MIN_MINUTES, Math.min(FOCUS_MAX_MINUTES, Math.round(mins)))
+  focusRunning = false
+  clearInterval(focusInterval)
+  focusTotal = clamped * 60
+  focusRemaining = focusTotal
+  paintFocus()
 }
 
-// Custom duration input — type a number (minutes) and press Enter or tab away.
+// Custom duration input — type minutes and press Enter or tab away. This is the
+// only duration control, so it fits the sidebar at every drag width.
 const focusCustomEl = document.getElementById('focus-custom')
 if (focusCustomEl) {
   const applyCustom = () => {
     const mins = parseInt(focusCustomEl.value, 10)
-    if (!mins || mins < 1 || mins > 240) return
-    focusRunning = false
-    clearInterval(focusInterval)
-    focusTotal = mins * 60
-    focusRemaining = focusTotal
-    focusCustomEl.classList.add('custom-active')
-    paintFocus()
+    if (!mins) { paintFocus(); return } // empty/invalid → restore current value
+    setFocusMinutes(mins)
   }
   focusCustomEl.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); applyCustom(); focusCustomEl.blur() }
-    if (e.key === 'Escape') { focusCustomEl.value = ''; focusCustomEl.blur() }
+    if (e.key === 'Escape') { focusCustomEl.blur(); paintFocus() }
   })
   focusCustomEl.addEventListener('change', applyCustom)
 }
+
+// −/+ steppers adjust by 5 minutes (snapping to the nearest multiple of 5).
+const focusMinus = document.getElementById('focus-minus')
+const focusPlus = document.getElementById('focus-plus')
+if (focusMinus) focusMinus.addEventListener('click', () => {
+  const cur = Math.round(focusTotal / 60)
+  setFocusMinutes(Math.floor((cur - 1) / 5) * 5 || FOCUS_MIN_MINUTES)
+})
+if (focusPlus) focusPlus.addEventListener('click', () => {
+  const cur = Math.round(focusTotal / 60)
+  setFocusMinutes((Math.floor(cur / 5) + 1) * 5)
+})
 
 paintFocus()
 
