@@ -10,7 +10,7 @@
     "dist:dir": "electron-builder --dir",
     "release": "electron-builder --publish always",
     "check": "node --check src/main/main.js && node --check src/main/settings-store.js && node --check src/main/service-preload.js && node --check src/main/panel-preload.js && node --check src/main/secure-store.js && node --check src/main/oauth.js && node --check src/main/api-feeds.js && node --check src/main/connections.js && node --check src/main/updater.js && node --check src/renderer/panel.js && node --check src/renderer/menu.js && node --check scripts/after-pack.js",
-    "test": "node --test"
+    "test": "node --test test/settings-store.test.js tooling/qa/full-regression.test.js"
   },
   "repository": {
     "type": "git",

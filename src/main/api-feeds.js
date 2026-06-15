@@ -75,6 +75,10 @@ async function fetchMail(accessToken) {
       preview: (m.bodyPreview || '').replace(/\s+/g, ' ').trim().slice(0, 160),
       // Raw Graph timestamp so the renderer can count "unread today" itself.
       receivedIso: m.receivedDateTime || null,
+      // Prefer an Outlook-owned message route for in-app opening. Some Graph
+      // webLink variants bounce through Microsoft 365 launch pages, which our
+      // router quite reasonably treats as Copilot/Office.
+      deepLink: m.id ? `https://outlook.office.com/mail/inbox/id/${encodeURIComponent(m.id)}` : null,
       webLink: m.webLink || null
     }
   })

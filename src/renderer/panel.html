@@ -32,6 +32,9 @@
       </div>
 
       <div class="topbar-right">
+        <button class="tool" id="command-palette-btn" title="Command palette (⌘K)" aria-label="Command palette">
+          <svg viewBox="0 0 24 24" class="icon"><path d="M4 6h16M4 12h10M4 18h7"/><path d="M17 14l3 3-3 3"/></svg>
+        </button>
         <button class="tool split-orient" id="split-orient" title="Split layout" aria-label="Toggle split orientation" disabled>
           <svg viewBox="0 0 24 24" class="icon"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="M12 5v14"/></svg>
         </button>
@@ -54,6 +57,9 @@
         </div>
         <button class="tool" data-command="open-external" title="Open in browser" aria-label="Open in browser">
           <svg viewBox="0 0 24 24" class="icon"><path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4" /></svg>
+        </button>
+        <button class="tool" id="shortcut-guide-btn" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">
+          <svg viewBox="0 0 24 24" class="icon"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9h.01M11 9h.01M15 9h.01M19 9h.01M7 13h.01M11 13h.01M15 13h.01M8 17h8"/></svg>
         </button>
         <button class="tool theme-toggle" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme"></button>
       </div>
@@ -141,6 +147,41 @@
               <span class="set-nav-text"><strong>Sidebar behavior</strong><small>What collapsing does</small></span>
               <span class="set-nav-ch"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
             </button>
+            <button class="set-nav-row" data-goto="diagnostics">
+              <span class="set-nav-ic"><svg viewBox="0 0 24 24"><path d="M4 19h16M6 17V9M12 17V5M18 17v-6"/></svg></span>
+              <span class="set-nav-text"><strong>Diagnostics</strong><small>Notification and feed health</small></span>
+              <span class="set-nav-ch"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
+            </button>
+            <button class="set-nav-row" data-goto="workspaces">
+              <span class="set-nav-ic"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 10h16M10 10v9"/></svg></span>
+              <span class="set-nav-text"><strong>Workspaces</strong><small>Save and restore layouts</small></span>
+              <span class="set-nav-ch"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
+            </button>
+            <button class="set-nav-row" data-goto="repair">
+              <span class="set-nav-ic"><svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17l3 3 5.3-5.3a4 4 0 0 0 5.4-5.4l-2.4 2.4-3-3 2.4-2.4z"/></svg></span>
+              <span class="set-nav-text"><strong>Session repair</strong><small>Reload or reset a service</small></span>
+              <span class="set-nav-ch"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
+            </button>
+            <button class="set-nav-row" data-goto="recents">
+              <span class="set-nav-ic"><svg viewBox="0 0 24 24"><path d="M12 8v5l3 2"/><circle cx="12" cy="12" r="9"/></svg></span>
+              <span class="set-nav-text"><strong>Recents</strong><small>Opened links and items</small></span>
+              <span class="set-nav-ch"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
+            </button>
+            <button class="set-nav-row" data-goto="feed-controls">
+              <span class="set-nav-ic"><svg viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/></svg></span>
+              <span class="set-nav-text"><strong>Feed controls</strong><small>Filter sidebar feeds</small></span>
+              <span class="set-nav-ch"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
+            </button>
+            <button class="set-nav-row" data-goto="downloads">
+              <span class="set-nav-ic"><svg viewBox="0 0 24 24"><path d="M12 3v11M7 10l5 5 5-5"/><path d="M4 20h16"/></svg></span>
+              <span class="set-nav-text"><strong>Downloads</strong><small>History and defaults</small></span>
+              <span class="set-nav-ch"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
+            </button>
+            <button class="set-nav-row" data-goto="portable">
+              <span class="set-nav-ic"><svg viewBox="0 0 24 24"><path d="M12 3v12M8 7l4-4 4 4"/><path d="M5 14v5h14v-5"/></svg></span>
+              <span class="set-nav-text"><strong>Import / Export</strong><small>Move non-secret settings</small></span>
+              <span class="set-nav-ch"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
+            </button>
           </div>
 
           <!-- Connections page -->
@@ -221,6 +262,8 @@
               <span class="quiet-to">to</span>
               <input id="quiet-end" class="set-input quiet-time" type="time" />
             </div>
+            <label class="set-check"><input id="quiet-weekends" type="checkbox" /> <span>Also quiet all weekend</span></label>
+            <label class="set-check"><input id="quiet-calendar" type="checkbox" /> <span>Allow calendar reminders during quiet hours</span></label>
           </div>
 
           <!-- Sidebar items page -->
@@ -247,6 +290,48 @@
               <input type="radio" name="collapseMode" value="rail" />
               <span><strong>Icon rail</strong><small>Collapses to a thin strip of icons.</small></span>
             </label>
+          </div>
+
+          <div class="set-page" id="set-page-diagnostics" hidden>
+            <p class="set-hint">Live health for feeds, notifications, connections, snooze, and quiet hours.</p>
+            <div class="set-actions"><button class="set-btn" id="test-notification">Send test notification</button><button class="set-btn" id="refresh-diagnostics">Refresh feeds</button></div>
+            <div class="set-list" id="diagnostics-list"></div>
+          </div>
+
+          <div class="set-page" id="set-page-workspaces" hidden>
+            <p class="set-hint">Save your current visible tabs, split view, and sidebar state.</p>
+            <div class="add-row"><input id="workspace-name" class="set-input" type="text" placeholder="Workspace name" /><button id="save-workspace" class="set-btn">Save workspace</button></div>
+            <div class="set-list" id="workspace-list"></div>
+          </div>
+
+          <div class="set-page" id="set-page-repair" hidden>
+            <p class="set-hint">Use reset only when a service is stuck or signed into the wrong account.</p>
+            <div class="set-list" id="repair-list"></div>
+          </div>
+
+          <div class="set-page" id="set-page-recents" hidden>
+            <p class="set-hint">Recent routed links, feed items, and completed downloads.</p>
+            <div class="set-actions"><button class="set-btn" id="clear-recents">Clear recents</button></div>
+            <div class="set-list" id="recent-list"></div>
+          </div>
+
+          <div class="set-page" id="set-page-feed-controls" hidden>
+            <p class="set-hint">Tune what appears in the sidebar feed previews.</p>
+            <label class="set-check"><input id="feed-mail-today" type="checkbox" /> <span>Show only today's unread mail</span></label>
+            <label class="set-check"><input id="feed-tasks-today" type="checkbox" /> <span>Show only overdue, today, and undated tasks</span></label>
+            <label class="set-check"><input id="feed-hide-previews" type="checkbox" /> <span>Hide email preview text in sidebar</span></label>
+          </div>
+
+          <div class="set-page" id="set-page-downloads" hidden>
+            <p class="set-hint">Completed downloads can be kept in a local history list.</p>
+            <label class="set-check"><input id="download-history-on" type="checkbox" /> <span>Remember completed downloads</span></label>
+            <label class="set-check"><input id="download-clear-quit" type="checkbox" /> <span>Clear download history when quitting</span></label>
+            <div class="set-actions"><button class="set-btn" id="clear-download-history">Clear download history</button></div>
+          </div>
+
+          <div class="set-page" id="set-page-portable" hidden>
+            <p class="set-hint">Export/import layout, pins, notifications, workspaces, and display preferences. Tokens and secrets are never included.</p>
+            <div class="set-actions"><button class="set-btn" id="export-settings">Export settings</button><button class="set-btn" id="import-settings">Import settings</button></div>
           </div>
         </div>
       </div>
@@ -332,6 +417,20 @@
       </div>
       <div class="dl-list" id="dl-list"></div>
       <div class="dl-empty" id="dl-empty">No downloads yet</div>
+    </div>
+
+    <div class="overlay-panel" id="command-palette" hidden>
+      <div class="overlay-card command-card">
+        <input id="command-input" class="command-input" type="text" placeholder="Search commands…" spellcheck="false" />
+        <div id="command-list" class="command-list"></div>
+      </div>
+    </div>
+
+    <div class="overlay-panel" id="shortcut-guide" hidden>
+      <div class="overlay-card shortcut-card">
+        <div class="overlay-head"><strong>Keyboard shortcuts</strong><button class="tool" id="shortcut-close" title="Close"><svg viewBox="0 0 24 24" class="icon"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+        <div class="shortcut-grid" id="shortcut-grid"></div>
+      </div>
     </div>
 
     <!-- First-boot welcome / Microsoft sign-in -->

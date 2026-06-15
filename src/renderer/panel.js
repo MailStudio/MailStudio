@@ -84,7 +84,24 @@ function applyTheme(theme) {
 
 /* ---------- Live feeds ---------- */
 function renderFeed(service) {
-  const feed = service.feed
+  const sourceFeed = service.feed
+  const prefs = (latest && latest.feedPrefs) || {}
+  const feed = { ...sourceFeed, items: Array.isArray(sourceFeed.items) ? sourceFeed.items.slice() : [] }
+  if (feed.kind === 'mail' && prefs.mailTodayOnly) {
+    const todayStr = new Date().toDateString()
+    feed.items = feed.items.filter((item) =>
+      item.today === true || (item.receivedIso && new Date(item.receivedIso).toDateString() === todayStr)
+    )
+  }
+  if (feed.kind === 'asana' && prefs.tasksTodayOnly) {
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    feed.items = feed.items.filter((item) => {
+      if (!item.dueOn) return true
+      const due = new Date(`${item.dueOn}T00:00:00`)
+      return !Number.isNaN(due.getTime()) && due.getTime() <= today.getTime()
+    })
+  }
   const wrap = document.createElement('div')
   wrap.className = `feed feed-${feed.kind}`
 
@@ -144,7 +161,7 @@ function renderFeed(service) {
       const timeStr = item.receivedIso
         ? relativeTime(item.receivedIso)
         : item.today === true ? 'Today' : ''
-      const preview = cleanText(item.preview || '')
+      const preview = prefs.hidePreviews ? '' : cleanText(item.preview || '')
       row.innerHTML = `
         <div class="feed-mail-header">
           <div class="feed-sender">${escapeHtml(cleanText(item.sender) || 'Unknown')}</div>
@@ -157,7 +174,9 @@ function renderFeed(service) {
         window.panelApi.sendCommand({
           type: 'open-feed-item',
           serviceKey: service.key,
+          itemId: item.id || null,
           rowIdx: item.rowIdx,
+          deepLink: item.deepLink || null,
           webLink: item.webLink || null,
           split: event.metaKey || event.ctrlKey
         })
@@ -174,7 +193,9 @@ function renderFeed(service) {
         window.panelApi.sendCommand({
           type: 'open-feed-item',
           serviceKey: service.key,
+          itemId: item.id || null,
           rowIdx: item.rowIdx,
+          deepLink: item.deepLink || null,
           webLink: item.webLink || null,
           split: event.metaKey || event.ctrlKey
         })
@@ -198,7 +219,9 @@ function renderFeed(service) {
         window.panelApi.sendCommand({
           type: 'open-feed-item',
           serviceKey: service.key,
+          itemId: item.id || null,
           rowIdx: item.rowIdx,
+          deepLink: item.deepLink || null,
           taskUrl: item.taskUrl || null,
           split: event.metaKey || event.ctrlKey
         })
@@ -329,6 +352,8 @@ function sendSettings(services, collapseMode) {
     settings: {
       collapseMode: collapseMode || (latest ? latest.collapseMode : 'vanish'),
       notif: latest ? latest.notif : null,
+      feedPrefs: latest ? latest.feedPrefs : null,
+      downloads: latest ? latest.downloadPrefs : null,
       services
     }
   })
@@ -340,7 +365,23 @@ function sendNotif(notif) {
     settings: {
       collapseMode: latest ? latest.collapseMode : 'vanish',
       services: workingServices(),
+      feedPrefs: latest ? latest.feedPrefs : null,
+      downloads: latest ? latest.downloadPrefs : null,
       notif
+    }
+  })
+}
+
+function sendPrefs(partial) {
+  window.panelApi.sendCommand({
+    type: 'update-settings',
+    settings: {
+      collapseMode: latest ? latest.collapseMode : 'vanish',
+      services: workingServices(),
+      notif: latest ? latest.notif : null,
+      feedPrefs: { ...((latest && latest.feedPrefs) || {}), ...(partial.feedPrefs || {}) },
+      downloads: { ...((latest && latest.downloadPrefs) || {}), ...(partial.downloads || {}) },
+      taskProvider: latest ? latest.taskProvider : 'microsoft'
     }
   })
 }
@@ -361,6 +402,10 @@ function renderSettings(snapshot) {
     const el = document.getElementById(id)
     if (el && document.activeElement !== el) el.value = notif[key] || ''
   }
+  const quietWeekend = document.getElementById('quiet-weekends')
+  if (quietWeekend) quietWeekend.checked = Boolean(notif.quietWeekends)
+  const quietCalendar = document.getElementById('quiet-calendar')
+  if (quietCalendar) quietCalendar.checked = Boolean(notif.quietAllowCalendar)
   const quietSub = document.querySelector('.set-nav-row[data-goto="quiet"] small')
   if (quietSub) {
     quietSub.textContent = notif.quietStart && notif.quietEnd
@@ -450,6 +495,39 @@ function renderSettings(snapshot) {
     row.append(reorder, name, sw)
 
     if (!service.builtin) {
+      const rename = document.createElement('button')
+      rename.className = 'set-icon-btn'
+      rename.title = 'Rename pinned site'
+      rename.textContent = 'Aa'
+      rename.addEventListener('click', () => {
+        const next = window.prompt('Pinned site name', service.label)
+        if (next === null) return
+        const label = next.trim()
+        if (!label) return
+        const list = workingServices()
+        list[index].label = label.slice(0, 80)
+        sendSettings(list)
+      })
+      const editUrl = document.createElement('button')
+      editUrl.className = 'set-icon-btn'
+      editUrl.title = 'Edit pinned site URL'
+      editUrl.textContent = 'URL'
+      editUrl.addEventListener('click', () => {
+        const next = window.prompt('Pinned site URL', service.url)
+        if (next === null) return
+        let url = next.trim()
+        if (!url) return
+        if (!/^https?:\/\//i.test(url)) url = `https://${url}`
+        try {
+          const valid = new URL(url).toString()
+          const list = workingServices()
+          list[index].url = valid
+          list[index].home = valid
+          sendSettings(list)
+        } catch {
+          addError.textContent = "That doesn't look like a valid URL."
+        }
+      })
       const del = document.createElement('button')
       del.className = 'set-icon-btn danger'
       del.innerHTML = TRASH
@@ -458,11 +536,13 @@ function renderSettings(snapshot) {
         const list = workingServices().filter((s) => s.key !== service.key)
         sendSettings(list)
       })
-      row.appendChild(del)
+      row.append(rename, editUrl, del)
     }
 
     setItems.appendChild(row)
   })
+
+  renderExtendedSettings(snapshot)
 }
 
 function addSite() {
@@ -505,7 +585,14 @@ const PAGE_TITLES = {
   tasks: 'Tasks',
   quiet: 'Quiet hours',
   sidebar: 'Sidebar items',
-  appearance: 'Sidebar behavior'
+  appearance: 'Sidebar behavior',
+  diagnostics: 'Diagnostics',
+  workspaces: 'Workspaces',
+  repair: 'Session repair',
+  recents: 'Recents',
+  'feed-controls': 'Feed controls',
+  downloads: 'Downloads',
+  portable: 'Import / Export'
 }
 
 function showSetPage(page) {
@@ -519,6 +606,105 @@ function showSetPage(page) {
   if (back) back.hidden = settingsPage === 'root'
   if (settingsPage === 'connections' && latest) {
     renderConnCards(latest, document.getElementById('set-conn-cards'))
+  }
+  if (latest) renderExtendedSettings(latest)
+}
+
+function renderExtendedSettings(snapshot) {
+  const feedPrefs = snapshot.feedPrefs || {}
+  const downloadPrefs = snapshot.downloadPrefs || {}
+  const checks = [
+    ['feed-mail-today', feedPrefs.mailTodayOnly],
+    ['feed-tasks-today', feedPrefs.tasksTodayOnly],
+    ['feed-hide-previews', feedPrefs.hidePreviews],
+    ['download-history-on', downloadPrefs.rememberHistory !== false],
+    ['download-clear-quit', Boolean(downloadPrefs.clearOnQuit)]
+  ]
+  for (const [id, checked] of checks) {
+    const el = document.getElementById(id)
+    if (el) el.checked = Boolean(checked)
+  }
+  renderDiagnostics(snapshot)
+  renderWorkspaces(snapshot)
+  renderRepair(snapshot)
+  renderRecents(snapshot)
+}
+
+function renderDiagnostics(snapshot) {
+  const list = document.getElementById('diagnostics-list')
+  if (!list) return
+  const diag = snapshot.diagnostics || {}
+  const rows = [
+    ['Quiet hours', diag.quietHoursActive ? 'Active' : 'Inactive'],
+    ['Global snooze', diag.globalSnoozed ? 'Active' : 'Inactive'],
+    ['Microsoft', (diag.connections && diag.connections.microsoft && diag.connections.microsoft.status) || 'unknown'],
+    ['Asana', (diag.connections && diag.connections.asana && diag.connections.asana.status) || 'unknown']
+  ]
+  const serviceRows = (diag.services || []).filter((s) => s.visible).map((s) => [
+    s.label,
+    `${s.feedKind ? `${s.feedKind}: ${s.feedState || 'idle'} (${s.feedItems}) · ${s.source || 'web'}` : 'web'}${s.snoozed ? ' · snoozed' : ''}${s.hibernated ? ' · sleeping' : ''}`
+  ])
+  list.innerHTML = [...rows, ...serviceRows].map(([a, b]) => `<div class="set-list-row"><strong>${escapeHtml(a)}</strong><small>${escapeHtml(b)}</small></div>`).join('')
+}
+
+function renderWorkspaces(snapshot) {
+  const list = document.getElementById('workspace-list')
+  if (!list) return
+  const workspaces = snapshot.workspaces || []
+  list.innerHTML = workspaces.length ? '' : '<div class="set-empty">No saved workspaces yet.</div>'
+  for (const ws of workspaces) {
+    const row = document.createElement('div')
+    row.className = 'set-list-row action-row'
+    row.innerHTML = `<span><strong>${escapeHtml(ws.name)}</strong><small>${escapeHtml((ws.splitKeys || []).join(' + ') || ws.activeServiceKey || 'single view')}</small></span>`
+    const open = document.createElement('button')
+    open.className = 'set-mini-btn'
+    open.textContent = 'Open'
+    open.addEventListener('click', () => window.panelApi.sendCommand({ type: 'apply-workspace', id: ws.id }))
+    const del = document.createElement('button')
+    del.className = 'set-mini-btn danger'
+    del.textContent = 'Delete'
+    del.addEventListener('click', () => window.panelApi.sendCommand({ type: 'delete-workspace', id: ws.id }))
+    row.append(open, del)
+    list.appendChild(row)
+  }
+}
+
+function renderRepair(snapshot) {
+  const list = document.getElementById('repair-list')
+  if (!list) return
+  list.innerHTML = ''
+  for (const service of (snapshot.services || []).filter((s) => s.visible)) {
+    const row = document.createElement('div')
+    row.className = 'set-list-row repair-row'
+    row.innerHTML = `<strong>${escapeHtml(service.label)}</strong>`
+    for (const [label, action] of [['Reload', 'reload'], ['Force', 'force-reload'], ['Home', 'reset-home'], ['Clear session', 'clear-session'], ['Browser', 'open-external']]) {
+      const btn = document.createElement('button')
+      btn.className = action === 'clear-session' ? 'set-mini-btn danger' : 'set-mini-btn'
+      btn.textContent = label
+      btn.addEventListener('click', () => window.panelApi.sendCommand({ type: 'repair-service', serviceKey: service.key, action }))
+      row.appendChild(btn)
+    }
+    list.appendChild(row)
+  }
+}
+
+function renderRecents(snapshot) {
+  const list = document.getElementById('recent-list')
+  if (!list) return
+  const recents = [...(snapshot.recentItems || []), ...(snapshot.downloadHistory || [])]
+    .sort((a, b) => (b.at || 0) - (a.at || 0))
+    .slice(0, 60)
+  list.innerHTML = recents.length ? '' : '<div class="set-empty">No recents yet.</div>'
+  for (const item of recents) {
+    const row = document.createElement('button')
+    row.className = 'set-list-row recent-row'
+    row.type = 'button'
+    row.innerHTML = `<strong>${escapeHtml(item.title || 'Item')}</strong><small>${escapeHtml(item.subtitle || item.url || item.kind || '')}</small>`
+    row.addEventListener('click', () => {
+      if (item.url) window.panelApi.sendCommand({ type: 'open-url', url: item.url })
+      else if (item.serviceKey) window.panelApi.sendCommand({ type: 'switch-service', serviceKey: item.serviceKey })
+    })
+    list.appendChild(row)
   }
 }
 
@@ -894,6 +1080,45 @@ for (const id of ['quiet-start', 'quiet-end']) {
   const el = document.getElementById(id)
   if (el) el.addEventListener('change', saveQuietHours)
 }
+const quietWeekends = document.getElementById('quiet-weekends')
+if (quietWeekends) quietWeekends.addEventListener('change', () => {
+  const notif = Object.assign({}, latest ? latest.notif : {})
+  notif.quietWeekends = quietWeekends.checked
+  sendNotif(notif)
+})
+const quietCalendar = document.getElementById('quiet-calendar')
+if (quietCalendar) quietCalendar.addEventListener('change', () => {
+  const notif = Object.assign({}, latest ? latest.notif : {})
+  notif.quietAllowCalendar = quietCalendar.checked
+  sendNotif(notif)
+})
+
+for (const [id, key] of [['feed-mail-today', 'mailTodayOnly'], ['feed-tasks-today', 'tasksTodayOnly'], ['feed-hide-previews', 'hidePreviews']]) {
+  const el = document.getElementById(id)
+  if (el) el.addEventListener('change', () => sendPrefs({ feedPrefs: { [key]: el.checked } }))
+}
+for (const [id, key] of [['download-history-on', 'rememberHistory'], ['download-clear-quit', 'clearOnQuit']]) {
+  const el = document.getElementById(id)
+  if (el) el.addEventListener('change', () => sendPrefs({ downloads: { [key]: el.checked } }))
+}
+const testNotification = document.getElementById('test-notification')
+if (testNotification) testNotification.addEventListener('click', () => window.panelApi.sendCommand({ type: 'send-test-notification' }))
+const refreshDiagnostics = document.getElementById('refresh-diagnostics')
+if (refreshDiagnostics) refreshDiagnostics.addEventListener('click', () => window.panelApi.sendCommand({ type: 'refresh-feeds' }))
+const saveWorkspaceBtn = document.getElementById('save-workspace')
+if (saveWorkspaceBtn) saveWorkspaceBtn.addEventListener('click', () => {
+  const input = document.getElementById('workspace-name')
+  window.panelApi.sendCommand({ type: 'save-workspace', name: input ? input.value : '' })
+  if (input) input.value = ''
+})
+const clearRecents = document.getElementById('clear-recents')
+if (clearRecents) clearRecents.addEventListener('click', () => window.panelApi.sendCommand({ type: 'clear-recents' }))
+const clearDownloadHistory = document.getElementById('clear-download-history')
+if (clearDownloadHistory) clearDownloadHistory.addEventListener('click', () => window.panelApi.sendCommand({ type: 'clear-download-history' }))
+const exportSettings = document.getElementById('export-settings')
+if (exportSettings) exportSettings.addEventListener('click', () => window.panelApi.sendCommand({ type: 'export-settings' }))
+const importSettings = document.getElementById('import-settings')
+if (importSettings) importSettings.addEventListener('click', () => window.panelApi.sendCommand({ type: 'import-settings' }))
 
 // "Notifications not armed" warning: a provider is connected but onboarding
 // never finished — arm them in place.
@@ -923,6 +1148,8 @@ for (const radio of document.querySelectorAll('input[name="taskProvider"]')) {
       settings: {
         collapseMode: latest ? latest.collapseMode : 'vanish',
         notif: latest ? latest.notif : null,
+        feedPrefs: latest ? latest.feedPrefs : null,
+        downloads: latest ? latest.downloadPrefs : null,
         services: workingServices(),
         taskProvider: radio.value
       }
@@ -944,6 +1171,143 @@ for (const button of document.querySelectorAll('[data-command]')) {
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 }
+
+/* ---------- Command palette + shortcuts ---------- */
+const commandPalette = document.getElementById('command-palette')
+const commandInput = document.getElementById('command-input')
+const commandList = document.getElementById('command-list')
+const shortcutGuide = document.getElementById('shortcut-guide')
+const shortcutGrid = document.getElementById('shortcut-grid')
+const SHORTCUTS = [
+  ['Command palette', '⌘K / Ctrl+K'],
+  ['Find in page', '⌘F / Ctrl+F'],
+  ['New email', '⌘N / Ctrl+N'],
+  ['New event', '⌘⇧E / Ctrl+Shift+E'],
+  ['New task', '⌘⇧T / Ctrl+Shift+T'],
+  ['Preferences', '⌘, / Ctrl+,'],
+  ['Back / Forward', '⌘[ / ⌘]'],
+  ['Reload page', '⌘R / Ctrl+R'],
+  ['Force reload', '⌘⇧R / Ctrl+Shift+R'],
+  ['Home', '⌘⇧H / Ctrl+Shift+H'],
+  ['Zoom in / out', '⌘+ / ⌘-'],
+  ['Actual size', '⌘0 / Ctrl+0'],
+  ['Switch tabs', '⌘1–9 / Ctrl+1–9'],
+  ['Split view', `${SPLIT_MOD_LABEL}-click a service`],
+  ['Close overlays', 'Esc']
+]
+
+function paletteCommands() {
+  const services = (latest ? latest.services : []).filter((s) => s.visible).map((s) => ({
+    title: `Open ${s.label}`,
+    sub: 'Service',
+    run: () => window.panelApi.sendCommand({ type: 'switch-service', serviceKey: s.key })
+  }))
+  const pages = Object.entries(PAGE_TITLES).filter(([key]) => key !== 'root').map(([key, title]) => ({
+    title: title,
+    sub: 'Settings',
+    run: () => {
+      window.panelApi.sendCommand({ type: 'open-settings' })
+      showSetPage(key)
+    }
+  }))
+  const workspaces = (latest && latest.workspaces ? latest.workspaces : []).map((ws) => ({
+    title: `Workspace: ${ws.name}`,
+    sub: 'Saved workspace',
+    run: () => window.panelApi.sendCommand({ type: 'apply-workspace', id: ws.id })
+  }))
+  return [
+    ...services,
+    ...workspaces,
+    { title: 'Refresh feeds', sub: 'Action', run: () => window.panelApi.sendCommand({ type: 'refresh-feeds' }) },
+    { title: 'Snooze all notifications', sub: 'Action', run: () => window.panelApi.sendCommand({ type: 'global-snooze-menu' }) },
+    { title: 'Open settings', sub: 'Action', run: () => window.panelApi.sendCommand({ type: 'open-settings' }) },
+    { title: 'Open downloads', sub: 'Action', run: () => { if (dlDrawer) dlDrawer.hidden = false } },
+    { title: 'Show keyboard shortcuts', sub: 'Help', run: openShortcutGuide },
+    ...pages
+  ]
+}
+
+function renderPalette() {
+  if (!commandList) return
+  const q = (commandInput.value || '').trim().toLowerCase()
+  const commands = paletteCommands().filter((cmd) => !q || `${cmd.title} ${cmd.sub}`.toLowerCase().includes(q)).slice(0, 12)
+  commandList.innerHTML = ''
+  for (const cmd of commands) {
+    const row = document.createElement('button')
+    row.type = 'button'
+    row.className = 'command-row'
+    row.innerHTML = `<strong>${escapeHtml(cmd.title)}</strong><small>${escapeHtml(cmd.sub)}</small>`
+    row.addEventListener('click', () => {
+      closeCommandPalette()
+      cmd.run()
+    })
+    commandList.appendChild(row)
+  }
+}
+
+function openCommandPalette() {
+  if (!commandPalette) return
+  commandPalette.hidden = false
+  window.panelApi.sendCommand({ type: 'open-transient-overlay' })
+  commandInput.value = ''
+  renderPalette()
+  commandInput.focus()
+}
+
+function closeCommandPalette() {
+  if (commandPalette) commandPalette.hidden = true
+  if (!shortcutGuide || shortcutGuide.hidden) {
+    window.panelApi.sendCommand({ type: 'close-transient-overlay' })
+  }
+}
+
+function openShortcutGuide() {
+  if (!shortcutGuide || !shortcutGrid) return
+  shortcutGrid.innerHTML = SHORTCUTS.map(([name, key]) => `<div><strong>${escapeHtml(name)}</strong><kbd>${escapeHtml(key)}</kbd></div>`).join('')
+  shortcutGuide.hidden = false
+  window.panelApi.sendCommand({ type: 'open-transient-overlay' })
+}
+
+function closeShortcutGuide() {
+  if (shortcutGuide) shortcutGuide.hidden = true
+  if (!commandPalette || commandPalette.hidden) {
+    window.panelApi.sendCommand({ type: 'close-transient-overlay' })
+  }
+}
+
+const commandPaletteBtn = document.getElementById('command-palette-btn')
+if (commandPaletteBtn) commandPaletteBtn.addEventListener('click', openCommandPalette)
+if (commandInput) {
+  commandInput.addEventListener('input', renderPalette)
+  commandInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeCommandPalette()
+    if (e.key === 'Enter') {
+      const first = commandList && commandList.querySelector('.command-row')
+      if (first) first.click()
+    }
+  })
+}
+if (commandPalette) commandPalette.addEventListener('mousedown', (e) => {
+  if (e.target === commandPalette) closeCommandPalette()
+})
+const shortcutGuideBtn = document.getElementById('shortcut-guide-btn')
+if (shortcutGuideBtn) shortcutGuideBtn.addEventListener('click', openShortcutGuide)
+const shortcutClose = document.getElementById('shortcut-close')
+if (shortcutClose) shortcutClose.addEventListener('click', closeShortcutGuide)
+if (shortcutGuide) shortcutGuide.addEventListener('mousedown', (e) => {
+  if (e.target === shortcutGuide) closeShortcutGuide()
+})
+document.addEventListener('keydown', (e) => {
+  const mod = e.metaKey || e.ctrlKey
+  if (mod && e.key.toLowerCase() === 'k') {
+    e.preventDefault()
+    openCommandPalette()
+  }
+  if (e.key === 'Escape') {
+    closeCommandPalette()
+    closeShortcutGuide()
+  }
+})
 
 // Strip icon-font glyphs (Private Use Area), zero-width characters, and the
 // replacement char — scraped OWA text picks these up and they render as □.
@@ -1129,6 +1493,9 @@ document.addEventListener('click', (e) => {
 window.panelApi.onEvent((data) => {
   if (data && data.type === 'open-search') {
     isSearchOpen() ? closeSearch() : openSearch()
+  }
+  if (data && data.type === 'open-command-palette') {
+    openCommandPalette()
   }
   if (data && data.type === 'download-started') {
     if (dlDrawer) dlDrawer.hidden = false

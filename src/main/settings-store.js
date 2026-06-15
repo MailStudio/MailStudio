@@ -154,6 +154,25 @@ const DEFAULTS = {
   },
   // Per-service feed (notification preview) collapse — true = hidden.
   feedCollapsed: {},
+  feedPrefs: {
+    mailTodayOnly: false,
+    tasksTodayOnly: false,
+    hidePreviews: false
+  },
+  layout: {
+    activeServiceKey: 'mail',
+    splitKeys: [],
+    splitOrientation: 'vertical',
+    splitRatio: 0.5,
+    zoomLevels: {}
+  },
+  workspaces: [],
+  recentItems: [],
+  downloadHistory: [],
+  downloads: {
+    rememberHistory: true,
+    clearOnQuit: false
+  },
   // User-dragged sidebar width in px (clamped to [180, 480]).
   sidebarWidth: 280,
   services: DEFAULT_SERVICES
@@ -268,8 +287,72 @@ function normalize(raw) {
     teams: rawNotif.teams !== false,
     preview: rawNotif.preview !== false,
     quietStart: typeof rawNotif.quietStart === 'string' ? rawNotif.quietStart.trim() : '',
-    quietEnd: typeof rawNotif.quietEnd === 'string' ? rawNotif.quietEnd.trim() : ''
+    quietEnd: typeof rawNotif.quietEnd === 'string' ? rawNotif.quietEnd.trim() : '',
+    quietWeekends: Boolean(rawNotif.quietWeekends),
+    quietAllowCalendar: Boolean(rawNotif.quietAllowCalendar)
   }
+
+  const rawFeedPrefs = (raw && typeof raw.feedPrefs === 'object' && raw.feedPrefs) ? raw.feedPrefs : {}
+  settings.feedPrefs = {
+    mailTodayOnly: Boolean(rawFeedPrefs.mailTodayOnly),
+    tasksTodayOnly: Boolean(rawFeedPrefs.tasksTodayOnly),
+    hidePreviews: Boolean(rawFeedPrefs.hidePreviews)
+  }
+
+  const rawDownloads = (raw && typeof raw.downloads === 'object' && raw.downloads) ? raw.downloads : {}
+  settings.downloads = {
+    rememberHistory: rawDownloads.rememberHistory !== false,
+    clearOnQuit: Boolean(rawDownloads.clearOnQuit)
+  }
+
+  const rawLayout = (raw && typeof raw.layout === 'object' && raw.layout) ? raw.layout : {}
+  const rawSplitKeys = Array.isArray(rawLayout.splitKeys) ? rawLayout.splitKeys : []
+  const rawZoom = (rawLayout && typeof rawLayout.zoomLevels === 'object' && rawLayout.zoomLevels) ? rawLayout.zoomLevels : {}
+  settings.layout = {
+    activeServiceKey: typeof rawLayout.activeServiceKey === 'string' ? rawLayout.activeServiceKey.slice(0, 80) : 'mail',
+    splitKeys: rawSplitKeys.filter((k) => typeof k === 'string').slice(0, 2),
+    splitOrientation: rawLayout.splitOrientation === 'horizontal' ? 'horizontal' : 'vertical',
+    splitRatio: typeof rawLayout.splitRatio === 'number'
+      ? Math.min(0.85, Math.max(0.15, rawLayout.splitRatio))
+      : 0.5,
+    zoomLevels: Object.fromEntries(
+      Object.entries(rawZoom)
+        .filter(([k, v]) => typeof k === 'string' && typeof v === 'number' && Number.isFinite(v))
+        .map(([k, v]) => [k, Math.min(3, Math.max(-2.5, v))])
+    )
+  }
+
+  const cleanRecents = (items) => (Array.isArray(items) ? items : [])
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => ({
+      id: typeof item.id === 'string' ? item.id.slice(0, 160) : `recent-${Math.abs(hash(JSON.stringify(item))).toString(36)}`,
+      kind: typeof item.kind === 'string' ? item.kind.slice(0, 32) : 'link',
+      title: typeof item.title === 'string' ? item.title.slice(0, 180) : 'Item',
+      subtitle: typeof item.subtitle === 'string' ? item.subtitle.slice(0, 220) : '',
+      url: typeof item.url === 'string' ? item.url.slice(0, 2000) : '',
+      serviceKey: typeof item.serviceKey === 'string' ? item.serviceKey.slice(0, 80) : '',
+      at: typeof item.at === 'number' ? item.at : Date.now()
+    }))
+    .slice(0, 50)
+  settings.recentItems = cleanRecents(raw && raw.recentItems)
+  settings.downloadHistory = cleanRecents(raw && raw.downloadHistory)
+
+  settings.workspaces = (Array.isArray(raw && raw.workspaces) ? raw.workspaces : [])
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => ({
+      id: typeof item.id === 'string' ? item.id.slice(0, 80) : `workspace-${Math.abs(hash(JSON.stringify(item))).toString(36)}`,
+      name: typeof item.name === 'string' && item.name.trim() ? item.name.trim().slice(0, 80) : 'Workspace',
+      activeServiceKey: typeof item.activeServiceKey === 'string' ? item.activeServiceKey.slice(0, 80) : 'mail',
+      splitKeys: Array.isArray(item.splitKeys) ? item.splitKeys.filter((k) => typeof k === 'string').slice(0, 2) : [],
+      splitOrientation: item.splitOrientation === 'horizontal' ? 'horizontal' : 'vertical',
+      splitRatio: typeof item.splitRatio === 'number' ? Math.min(0.85, Math.max(0.15, item.splitRatio)) : 0.5,
+      sidebarCollapsed: Boolean(item.sidebarCollapsed),
+      collapseMode: item.collapseMode === 'rail' ? 'rail' : 'vanish',
+      services: Array.isArray(item.services)
+        ? item.services.map((s) => ({ key: String(s.key || '').slice(0, 80), visible: s.visible !== false })).filter((s) => s.key)
+        : []
+    }))
+    .slice(0, 20)
 
   const builtinDefaults = new Map(DEFAULT_SERVICES.map((s) => [s.key, s]))
   const seen = new Set()

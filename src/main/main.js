@@ -1,5 +1,6 @@
 const path = require('path')
 const os = require('os')
+const fs = require('fs')
 const {
   app,
   BrowserView,
@@ -138,6 +139,7 @@ let settingsOpen = false
 // detaches the service BrowserView so the centered sheet (DOM) isn't hidden
 // behind an on-top web view.
 let onboardingOpen = false
+let transientOverlayOpen = false
 let tray = null
 let panelWindow = null
 let menuWindow = null
@@ -190,6 +192,7 @@ function setServiceZoom(key, level) {
   if (view && !view.webContents.isDestroyed()) {
     view.webContents.setZoomLevel(next)
   }
+  if (settings && settings.layout) persistLayout()
 }
 
 // Step a service's zoom by a delta (used by the Zoom In/Out/Reset menu items so
@@ -211,6 +214,82 @@ function onServiceZoomChanged(key, direction) {
 // here so the panel shows a unified list with OS-native save dialog + progress.
 let downloadIdSeq = 0
 const downloads = new Map() // id → entry (entry._item is the live DownloadItem)
+
+function visibleServiceKeys() {
+  return new Set(settings.services.filter((service) => service.visible).map((service) => service.key))
+}
+
+function persistLayout() {
+  const layout = {
+    activeServiceKey,
+    splitKeys: inSplit() ? splitKeys.slice() : [],
+    splitOrientation,
+    splitRatio,
+    zoomLevels: Object.fromEntries(zoomLevels)
+  }
+  settings = store.save({ ...settings, layout })
+}
+
+function addRecentItem(item) {
+  if (!item || !item.title) return
+  const next = {
+    id: item.id || `${item.kind || 'item'}-${Date.now()}`,
+    kind: item.kind || 'link',
+    title: String(item.title).slice(0, 180),
+    subtitle: String(item.subtitle || '').slice(0, 220),
+    url: String(item.url || '').slice(0, 2000),
+    serviceKey: String(item.serviceKey || activeServiceKey || '').slice(0, 80),
+    at: Date.now()
+  }
+  const prior = Array.isArray(settings.recentItems) ? settings.recentItems : []
+  const recentItems = [next, ...prior.filter((r) => r.id !== next.id && r.url !== next.url)].slice(0, 50)
+  settings = store.save({ ...settings, recentItems })
+  pushSnapshot()
+}
+
+function addDownloadHistory(entry) {
+  if (!settings.downloads || settings.downloads.rememberHistory === false || !entry || !entry.filename) return
+  const next = {
+    id: `download-${entry.id}-${Date.now()}`,
+    kind: 'download',
+    title: entry.filename,
+    subtitle: entry.savePath || '',
+    url: entry.url || '',
+    serviceKey: activeServiceKey,
+    at: Date.now()
+  }
+  const downloadHistory = [next, ...(settings.downloadHistory || [])].slice(0, 50)
+  settings = store.save({ ...settings, downloadHistory })
+}
+
+function getDiagnostics() {
+  const conn = connections.getStatus()
+  return {
+    generatedAt: Date.now(),
+    quietHoursActive: isQuietHours(),
+    globalSnoozed: isGlobalSnoozed(),
+    services: settings.services.map((service) => {
+      const feed = serviceFeeds[service.key]
+      return {
+        key: service.key,
+        label: service.label,
+        visible: service.visible,
+        loaded: loadedServiceKeys.has(service.key),
+        hibernated: !serviceViews.has(service.key),
+        snoozed: isSnoozed(service.key),
+        feedKind: feed ? feed.kind : '',
+        feedState: feed ? feed.state : '',
+        feedItems: feed && Array.isArray(feed.items) ? feed.items.length : 0,
+        source: feed ? (connections.isConnected(connections.providerForFeed(feed.kind)) ? 'api' : 'scraper') : ''
+      }
+    }),
+    connections: conn,
+    quietStart: (settings.notif || {}).quietStart || '',
+    quietEnd: (settings.notif || {}).quietEnd || '',
+    quietWeekends: Boolean((settings.notif || {}).quietWeekends),
+    quietAllowCalendar: Boolean((settings.notif || {}).quietAllowCalendar)
+  }
+}
 
 function pushDownloads() {
   if (!panelWindow || panelWindow.isDestroyed()) return
@@ -509,7 +588,13 @@ function needsLiveView(key) {
 // serviceState/serviceFeeds cache. No-op if a live view already exists.
 function ensureServiceView(key) {
   const existing = serviceViews.get(key)
-  if (existing && !existing.webContents.isDestroyed()) return existing
+  if (existing && existing.webContents && !existing.webContents.isDestroyed()) return existing
+  // A cached view with a missing/destroyed webContents can't be reused — drop it
+  // so a fresh one is built below instead of crashing on a stale handle.
+  if (existing) {
+    serviceViews.delete(key)
+    loadedServiceKeys.delete(key)
+  }
   const service = findService(key)
   if (!service) return null
   return createServiceView(service)
@@ -626,11 +711,12 @@ function finishFirstBoot() {
 }
 
 function isQuietHours() {
-  const { quietStart, quietEnd } = (settings.notif || {})
+  const { quietStart, quietEnd, quietWeekends } = (settings.notif || {})
+  const now = new Date()
+  if (quietWeekends && (now.getDay() === 0 || now.getDay() === 6)) return true
   if (!quietStart || !quietEnd) return false
   const [sh, sm = 0] = quietStart.split(':').map(Number)
   const [eh, em = 0] = quietEnd.split(':').map(Number)
-  const now = new Date()
   const nowMins = now.getHours() * 60 + now.getMinutes()
   const startMins = sh * 60 + sm
   const endMins = eh * 60 + em
@@ -828,7 +914,7 @@ function maybeNotifyCalendar(items) {
   if (!settings.onboarded) { console.warn('[notify] calendar suppressed: not onboarded (connect an account / finish setup)'); return }
   const notif = settings.notif || {}
   if (!notif.calendar) { console.warn('[notify] calendar suppressed: Calendar notifications toggled off in Settings'); return }
-  if (isQuietHours()) { console.warn('[notify] calendar suppressed: quiet hours active'); return }
+  if (isQuietHours() && !notif.quietAllowCalendar) { console.warn('[notify] calendar suppressed: quiet hours active'); return }
   if (isSnoozed('calendar')) { console.warn('[notify] calendar suppressed: Calendar is snoozed'); return }
   for (const item of due) {
     const start = new Date(String(item.startIso).replace(/(\.\d+)?$/, '')).getTime()
@@ -1169,6 +1255,13 @@ function routeToService(targetService, url) {
 // re-checks the allowlist); everything else goes to the default browser.
 function openLinkInApp(url) {
   const internalService = resolveServiceByUrl(url)
+  addRecentItem({
+    kind: internalService ? 'routed-link' : 'external-link',
+    title: urlTitle(url),
+    subtitle: url,
+    url,
+    serviceKey: internalService ? internalService.key : activeServiceKey
+  })
   if (internalService) {
     routeToService(internalService, url)
     return
@@ -1180,6 +1273,15 @@ function openLinkInApp(url) {
     return
   }
   openExternalSafe(url)
+}
+
+function urlTitle(url) {
+  try {
+    const parsed = new URL(url)
+    return parsed.hostname.replace(/^www\./, '')
+  } catch {
+    return 'Link'
+  }
 }
 
 function getTrayIconPath(unread) {
@@ -1247,6 +1349,11 @@ function buildAppMenu() {
           label: 'Find in Page…',
           accelerator: 'CmdOrCtrl+F',
           click: () => sendPanelEvent({ type: 'open-search' })
+        },
+        {
+          label: 'Command Palette…',
+          accelerator: 'CmdOrCtrl+K',
+          click: () => sendPanelEvent({ type: 'open-command-palette' })
         },
         { type: 'separator' },
         { label: 'Back', accelerator: 'CmdOrCtrl+[', click: () => navigate('back') },
@@ -1389,6 +1496,7 @@ function configurePartition(partitionName) {
       entry.speed = 0
       entry._item = null
       if (state === 'completed' && entry.savePath) {
+        addDownloadHistory(entry)
         fireNotification(
           { title: 'Download complete', body: entry.filename },
           () => { shell.showItemInFolder(entry.savePath) }
@@ -1492,7 +1600,7 @@ function attachServiceView() {
   // keep the on-top web views off so the centered DOM is visible and clickable.
   // While the divider is being dragged, the views are also off so the renderer
   // can track the mouse across the whole content area and paint a live preview.
-  if (firstBoot || onboardingOpen || splitDragging) {
+  if (firstBoot || onboardingOpen || transientOverlayOpen || splitDragging) {
     detachAllViews()
     return
   }
@@ -1586,6 +1694,9 @@ function createServiceView(service) {
 
   view.webContents.setUserAgent(getAppUserAgent())
   view.webContents.setMaxListeners(20)
+  if (zoomLevels.has(service.key)) {
+    view.webContents.setZoomLevel(zoomLevels.get(service.key))
+  }
 
   // Dampen trackpad pinch zoom: override Chromium's coarse per-tick step with a
   // small one so the page doesn't leap when pinching (see onServiceZoomChanged).
@@ -2692,6 +2803,12 @@ function getSnapshot() {
     collapseMode: settings.collapseMode,
     taskProvider: settings.taskProvider,
     notif: settings.notif,
+    feedPrefs: settings.feedPrefs || {},
+    workspaces: settings.workspaces || [],
+    recentItems: settings.recentItems || [],
+    downloadHistory: settings.downloadHistory || [],
+    downloadPrefs: settings.downloads || {},
+    diagnostics: getDiagnostics(),
     firstBoot,
     onboarded: Boolean(settings.onboarded),
     notifSetupSkipped: Boolean(settings.notifSetupSkipped),
@@ -2751,6 +2868,7 @@ function pushSnapshot() {
 /* ---------- Settings application ---------- */
 function applySettings(next) {
   settings = store.save(next)
+  buildAllowedHosts()
   syncServiceViews()
   buildAppMenu()
   if (panelWindow) {
@@ -2758,6 +2876,196 @@ function applySettings(next) {
   }
   pushSnapshot()
   setTimeout(refreshFeeds, 1500)
+}
+
+function exportPortableSettings() {
+  if (!panelWindow || panelWindow.isDestroyed()) return
+  const portable = {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    settings: {
+      theme: settings.theme,
+      collapseMode: settings.collapseMode,
+      taskProvider: settings.taskProvider,
+      notif: settings.notif,
+      feedPrefs: settings.feedPrefs,
+      layout: settings.layout,
+      workspaces: settings.workspaces,
+      services: settings.services,
+      feedCollapsed: settings.feedCollapsed,
+      sidebarWidth: settings.sidebarWidth,
+      downloads: settings.downloads
+    }
+  }
+  dialog.showSaveDialog(panelWindow, {
+    title: 'Export MailStudio Settings',
+    defaultPath: path.join(app.getPath('documents'), 'mailstudio-settings.json'),
+    filters: [{ name: 'JSON', extensions: ['json'] }]
+  }).then(({ canceled, filePath }) => {
+    if (canceled || !filePath) return
+    fs.writeFileSync(filePath, JSON.stringify(portable, null, 2), { encoding: 'utf8', mode: 0o600 })
+  }).catch((e) => console.error('[settings] export failed:', e && e.message))
+}
+
+function importPortableSettings() {
+  if (!panelWindow || panelWindow.isDestroyed()) return
+  dialog.showOpenDialog(panelWindow, {
+    title: 'Import MailStudio Settings',
+    properties: ['openFile'],
+    filters: [{ name: 'JSON', extensions: ['json'] }]
+  }).then(({ canceled, filePaths }) => {
+    if (canceled || !filePaths || !filePaths[0]) return
+    const parsed = JSON.parse(fs.readFileSync(filePaths[0], 'utf8'))
+    const imported = parsed && parsed.settings ? parsed.settings : parsed
+    applySettings({
+      ...settings,
+      theme: imported.theme,
+      collapseMode: imported.collapseMode,
+      taskProvider: imported.taskProvider,
+      notif: imported.notif,
+      feedPrefs: imported.feedPrefs,
+      layout: imported.layout,
+      workspaces: imported.workspaces,
+      services: imported.services,
+      feedCollapsed: imported.feedCollapsed,
+      sidebarWidth: imported.sidebarWidth,
+      downloads: imported.downloads,
+      connections: settings.connections,
+      scratch: settings.scratch,
+      recentItems: settings.recentItems,
+      downloadHistory: settings.downloadHistory
+    })
+    sidebarExpandedWidth = settings.sidebarWidth || sidebarExpandedWidth
+    restorePersistedLayout()
+    attachServiceView()
+    pushSnapshot()
+  }).catch((e) => console.error('[settings] import failed:', e && e.message))
+}
+
+function restorePersistedLayout() {
+  const layout = settings.layout || {}
+  const visible = visibleServiceKeys()
+  splitKeys = Array.isArray(layout.splitKeys) ? layout.splitKeys.filter((key) => visible.has(key)).slice(0, 2) : []
+  splitOrientation = layout.splitOrientation === 'horizontal' ? 'horizontal' : 'vertical'
+  splitRatio = typeof layout.splitRatio === 'number' ? Math.min(SPLIT_RATIO_MAX, Math.max(SPLIT_RATIO_MIN, layout.splitRatio)) : 0.5
+  if (typeof layout.activeServiceKey === 'string' && findService(layout.activeServiceKey)?.visible) {
+    activeServiceKey = layout.activeServiceKey
+  }
+  zoomLevels.clear()
+  for (const [key, value] of Object.entries(layout.zoomLevels || {})) {
+    if (typeof value === 'number' && Number.isFinite(value)) zoomLevels.set(key, clampZoom(value))
+  }
+}
+
+function saveWorkspace(name) {
+  const workspace = {
+    id: `workspace-${Date.now()}`,
+    name: String(name || '').trim().slice(0, 80) || `Workspace ${(settings.workspaces || []).length + 1}`,
+    activeServiceKey,
+    splitKeys: inSplit() ? splitKeys.slice() : [],
+    splitOrientation,
+    splitRatio,
+    sidebarCollapsed,
+    collapseMode: settings.collapseMode,
+    services: settings.services.map((service) => ({ key: service.key, visible: service.visible }))
+  }
+  settings = store.save({ ...settings, workspaces: [workspace, ...(settings.workspaces || [])].slice(0, 20) })
+  pushSnapshot()
+}
+
+function applyWorkspace(id) {
+  const workspace = (settings.workspaces || []).find((item) => item.id === id)
+  if (!workspace) return
+  const visibility = new Map((workspace.services || []).map((s) => [s.key, s.visible !== false]))
+  const services = settings.services.map((service) => visibility.has(service.key) ? { ...service, visible: visibility.get(service.key) } : service)
+  settings = store.save({ ...settings, collapseMode: workspace.collapseMode || settings.collapseMode, services })
+  buildAllowedHosts()
+  syncServiceViews()
+  buildAppMenu()
+  sidebarCollapsed = Boolean(workspace.sidebarCollapsed)
+  splitKeys = Array.isArray(workspace.splitKeys) ? workspace.splitKeys.filter((key) => findService(key)?.visible).slice(0, 2) : []
+  splitOrientation = workspace.splitOrientation === 'horizontal' ? 'horizontal' : 'vertical'
+  splitRatio = typeof workspace.splitRatio === 'number' ? workspace.splitRatio : 0.5
+  activeServiceKey = findService(workspace.activeServiceKey)?.visible ? workspace.activeServiceKey : (visibleServices()[0] || {}).key || 'mail'
+  persistLayout()
+  attachServiceView()
+  pushSnapshot()
+}
+
+function deleteWorkspace(id) {
+  settings = store.save({ ...settings, workspaces: (settings.workspaces || []).filter((item) => item.id !== id) })
+  pushSnapshot()
+}
+
+function stringOrNull(value) {
+  return typeof value === 'string' && value ? value : null
+}
+
+function findFeedItem(feed, command) {
+  if (!feed || !Array.isArray(feed.items)) return null
+  if (typeof command.itemId === 'string' && command.itemId) {
+    const byId = feed.items.find((item) => String(item.id || '') === command.itemId)
+    if (byId) return byId
+  }
+  if (typeof command.taskUrl === 'string' && command.taskUrl) {
+    const byTaskUrl = feed.items.find((item) => item.taskUrl === command.taskUrl)
+    if (byTaskUrl) return byTaskUrl
+  }
+  if (typeof command.webLink === 'string' && command.webLink) {
+    const byWebLink = feed.items.find((item) => item.webLink === command.webLink || item.deepLink === command.webLink)
+    if (byWebLink) return byWebLink
+  }
+  if (typeof command.rowIdx === 'number') {
+    const idx = Math.trunc(command.rowIdx)
+    if (Number.isInteger(idx) && idx >= 0) {
+      return feed.items.find((item) => item.rowIdx === idx) || feed.items[idx] || null
+    }
+  }
+  return null
+}
+
+function repairService(serviceKey, action) {
+  const service = findService(serviceKey)
+  if (!service) return
+  const view = serviceViews.get(serviceKey)
+  if (action === 'reload') {
+    if (view && !view.webContents.isDestroyed()) view.webContents.reload()
+    return
+  }
+  if (action === 'force-reload') {
+    if (view && !view.webContents.isDestroyed()) view.webContents.reloadIgnoringCache()
+    return
+  }
+  if (action === 'open-external') {
+    openExternalSafe((serviceState[serviceKey] || {}).href || service.url)
+    return
+  }
+  if (action === 'reset-home') {
+    if (view && !view.webContents.isDestroyed()) {
+      loadedServiceKeys.add(serviceKey)
+      safeLoadURL(view.webContents, service.home || service.url)
+    }
+    return
+  }
+  if (action === 'clear-session') {
+    const partitionSession = session.fromPartition(partitionFor(service))
+    Promise.all([
+      partitionSession.clearCache().catch(() => {}),
+      partitionSession.clearStorageData({
+        storages: ['cookies', 'localstorage', 'indexdb', 'shadercache', 'serviceworkers', 'cachestorage']
+      }).catch(() => {})
+    ]).finally(() => {
+      hibernateServiceView(serviceKey)
+      ensureServiceView(serviceKey)
+      loadedServiceKeys.delete(serviceKey)
+      if (activeServiceKey === serviceKey) {
+        ensureServiceLoaded(serviceKey)
+        attachServiceView()
+      }
+      refreshFeeds()
+      pushSnapshot()
+    })
+  }
 }
 
 /* ---------- IPC ---------- */
@@ -2778,11 +3086,13 @@ function registerIpc() {
       case 'switch-service':
         showService(command.serviceKey)
         hideMenuWindow()
+        persistLayout()
         break
       case 'split-select':
         if (typeof command.serviceKey === 'string') {
           splitSelect(command.serviceKey)
           hideMenuWindow()
+          persistLayout()
         }
         break
       case 'toggle-split-orientation':
@@ -2790,6 +3100,7 @@ function registerIpc() {
         if (inSplit()) {
           splitOrientation = splitOrientation === 'vertical' ? 'horizontal' : 'vertical'
           attachServiceView()
+          persistLayout()
           pushSnapshot()
         }
         break
@@ -2808,6 +3119,7 @@ function registerIpc() {
           splitRatio = Math.min(SPLIT_RATIO_MAX, Math.max(SPLIT_RATIO_MIN, command.ratio))
         }
         attachServiceView()
+        persistLayout()
         pushSnapshot()
         break
       case 'open-app':
@@ -2871,8 +3183,41 @@ function registerIpc() {
             collapseMode: command.settings.collapseMode || settings.collapseMode,
             taskProvider: command.settings.taskProvider || settings.taskProvider,
             notif: command.settings.notif || settings.notif,
+            feedPrefs: command.settings.feedPrefs || settings.feedPrefs,
+            downloads: command.settings.downloads || settings.downloads,
             services: Array.isArray(command.settings.services) ? command.settings.services : settings.services
           })
+        }
+        break
+      case 'export-settings':
+        exportPortableSettings()
+        break
+      case 'import-settings':
+        importPortableSettings()
+        break
+      case 'save-workspace':
+        saveWorkspace(command.name)
+        break
+      case 'apply-workspace':
+        if (typeof command.id === 'string') applyWorkspace(command.id)
+        break
+      case 'delete-workspace':
+        if (typeof command.id === 'string') deleteWorkspace(command.id)
+        break
+      case 'clear-recents':
+        settings = store.save({ ...settings, recentItems: [] })
+        pushSnapshot()
+        break
+      case 'clear-download-history':
+        settings = store.save({ ...settings, downloadHistory: [] })
+        pushSnapshot()
+        break
+      case 'send-test-notification':
+        fireNotification({ title: 'MailStudio test', body: 'Notifications are able to display.' }, () => showPanelWindow())
+        break
+      case 'repair-service':
+        if (typeof command.serviceKey === 'string' && typeof command.action === 'string') {
+          repairService(command.serviceKey, command.action)
         }
         break
       case 'go-home':
@@ -2905,11 +3250,28 @@ function registerIpc() {
         const targetView = serviceViews.get(command.serviceKey)
         if (targetView && !targetView.webContents.isDestroyed()) {
           const feedKind = serviceFeeds[command.serviceKey] ? serviceFeeds[command.serviceKey].kind : null
+          const feed = serviceFeeds[command.serviceKey]
+          const recentItem = findFeedItem(feed, command)
+          const itemUrl =
+            stringOrNull(command.deepLink) ||
+            stringOrNull(recentItem && recentItem.deepLink) ||
+            stringOrNull(command.taskUrl) ||
+            stringOrNull(recentItem && recentItem.taskUrl) ||
+            stringOrNull(command.webLink) ||
+            stringOrNull(recentItem && recentItem.webLink)
+          if (recentItem) {
+            addRecentItem({
+              kind: feedKind || 'feed',
+              title: recentItem.subject || recentItem.title || recentItem.name || 'Feed item',
+              subtitle: recentItem.sender || recentItem.time || recentItem.dueOn || '',
+              url: itemUrl || '',
+              serviceKey: command.serviceKey
+            })
+          }
           // API feed items carry a deep link (webLink/permalink) — open it
           // directly in the owning view rather than clicking a scraped row.
-          const deepLink = (typeof command.webLink === 'string' && command.webLink) ? command.webLink : null
-          if (deepLink) {
-            loadInServiceView(targetView, command.serviceKey, deepLink)
+          if (itemUrl) {
+            loadInServiceView(targetView, command.serviceKey, itemUrl)
             revealFeedTarget(command.serviceKey, command.split)
             break
           }
@@ -2937,9 +3299,7 @@ function registerIpc() {
                 .catch(() => {})
             }, 200)
           } else if (feedKind === 'asana') {
-            if (command.taskUrl && typeof command.taskUrl === 'string') {
-              loadInServiceView(targetView, command.serviceKey, command.taskUrl)
-            } else if (typeof command.rowIdx === 'number') {
+            if (typeof command.rowIdx === 'number') {
               const idx = Math.trunc(command.rowIdx)
               if (!Number.isInteger(idx) || idx < 0 || idx > 50000) break
               setTimeout(() => {
@@ -3106,6 +3466,17 @@ function registerIpc() {
         settings = store.save({ ...settings, notifSetupSkipped: true })
         pushSnapshot()
         break
+      case 'open-transient-overlay':
+        transientOverlayOpen = true
+        attachServiceView()
+        updateVisibleStates()
+        break
+      case 'close-transient-overlay':
+        transientOverlayOpen = false
+        attachServiceView()
+        updateVisibleStates()
+        pushSnapshot()
+        break
       case 'find-in-page': {
         const fView = serviceViews.get(activeServiceKey)
         if (fView && !fView.webContents.isDestroyed() && typeof command.text === 'string' && command.text) {
@@ -3198,6 +3569,9 @@ function showTabContextMenu(serviceKey) {
     const v = serviceViews.get(serviceKey)
     if (v && !v.webContents.isDestroyed()) v.webContents.reload()
   } })
+  items.push({ label: `Force Reload ${service.label}`, click: () => repairService(serviceKey, 'force-reload') })
+  items.push({ label: `Reset ${service.label} to Home`, click: () => repairService(serviceKey, 'reset-home') })
+  items.push({ label: `Clear ${service.label} Session`, click: () => repairService(serviceKey, 'clear-session') })
   items.push({ label: 'Open in browser', click: () => openExternalSafe((serviceState[serviceKey] || {}).href || service.url) })
 
   Menu.buildFromTemplate(items).popup({ window: panelWindow })
@@ -3256,6 +3630,10 @@ app.whenReady().then(() => {
   settings = store.load()
   firstBoot = Boolean(settings.firstBoot)
   sidebarExpandedWidth = settings.sidebarWidth || 280
+  restorePersistedLayout()
+  if (!splitKeys.length && !findService(activeServiceKey)?.visible) {
+    activeServiceKey = (visibleServices()[0] || {}).key || 'mail'
+  }
   buildAllowedHosts()
   buildAppMenu()
   configureSession()
@@ -3298,6 +3676,9 @@ app.on('activate', () => {
 
 app.on('before-quit', () => {
   app.isQuitting = true
+  if (settings.downloads && settings.downloads.clearOnQuit) {
+    settings = store.save({ ...settings, downloadHistory: [] })
+  }
 })
 
 app.on('window-all-closed', (event) => {
