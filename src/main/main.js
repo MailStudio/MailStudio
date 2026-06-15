@@ -144,11 +144,9 @@ let tray = null
 let panelWindow = null
 let menuWindow = null
 let feedTimer = null
-let lastMailNotificationCount = 0
 let lastTeamsNotificationCount = 0
 let teamsNotifReady = false
-const notifiedEmailIds = new Set()
-let mailNotifReady = false
+const mailNotificationState = new Map()
 // Asana: ids already seen, so only genuinely new assigned tasks notify.
 const notifiedTaskIds = new Set()
 let asanaNotifReady = false
@@ -581,6 +579,12 @@ function needsLiveView(key) {
   if (key === 'teams') return true
   const feed = serviceFeeds[key]
   if (feed && !connections.feedIsLive(feed.kind)) return true
+  // Shared/discovered Outlook mailboxes always scrape from their own view, even
+  // when the Graph API is live: the API's /me inbox only covers the primary
+  // mailbox, so refreshFeed deliberately bypasses the API for these. Hibernating
+  // them would silently freeze their feed and notifications, so keep them live.
+  const service = findService(key)
+  if (feed && feed.kind === 'mail' && service && service.mailboxManaged) return true
   return false
 }
 
@@ -733,26 +737,36 @@ function fireNotification(opts, onClick) {
   n.show()
 }
 
-function diffAndNotifyMail(items, unreadCount) {
+function mailNotifyState(serviceKey) {
+  if (!mailNotificationState.has(serviceKey)) {
+    mailNotificationState.set(serviceKey, { notifiedIds: new Set(), ready: false, lastCount: 0 })
+  }
+  return mailNotificationState.get(serviceKey)
+}
+
+function diffAndNotifyMail(items, unreadCount, serviceKey = 'mail') {
+  const state = mailNotifyState(serviceKey)
+  const service = findService(serviceKey) || findService('mail')
+  const serviceLabel = service ? service.label : 'Mail'
   if (unreadCount === 0) {
-    notifiedEmailIds.clear()
-    lastMailNotificationCount = 0
-    mailNotifReady = false
+    state.notifiedIds.clear()
+    state.lastCount = 0
+    state.ready = false
     return
   }
 
-  if (!mailNotifReady) {
+  if (!state.ready) {
     // First scrape after launch: mark all current emails as seen without notifying.
-    for (const item of items) { if (item.id) notifiedEmailIds.add(item.id) }
-    capBaselineSet(notifiedEmailIds)
-    lastMailNotificationCount = unreadCount
-    mailNotifReady = true
+    for (const item of items) { if (item.id) state.notifiedIds.add(item.id) }
+    capBaselineSet(state.notifiedIds)
+    state.lastCount = unreadCount
+    state.ready = true
     return
   }
 
   const notif = settings.notif || {}
-  const countWentUp = unreadCount > lastMailNotificationCount
-  lastMailNotificationCount = unreadCount
+  const countWentUp = unreadCount > state.lastCount
+  state.lastCount = unreadCount
 
   if (!countWentUp) return
   // From here on a new email arrived and we WOULD notify — log any gate that
@@ -760,29 +774,27 @@ function diffAndNotifyMail(items, unreadCount) {
   if (!settings.onboarded) { console.warn('[notify] mail suppressed: not onboarded (connect an account / finish setup)'); return }
   if (!notif.mail) { console.warn('[notify] mail suppressed: Mail notifications toggled off in Settings'); return }
   if (isQuietHours()) { console.warn('[notify] mail suppressed: quiet hours active'); return }
-  if (isSnoozed('mail')) { console.warn('[notify] mail suppressed: Mail is snoozed'); return }
-  if (panelWindow && panelWindow.isFocused() && serviceFeeds[activeServiceKey]?.kind === 'mail') return
+  if (isSnoozed(serviceKey)) { console.warn(`[notify] mail suppressed: ${serviceLabel} is snoozed`); return }
+  if (panelWindow && panelWindow.isFocused() && activeServiceKey === serviceKey) return
 
-  const newItems = items.filter((item) => item.id && !notifiedEmailIds.has(item.id))
+  const newItems = items.filter((item) => item.id && !state.notifiedIds.has(item.id))
 
   // Mark all visible emails as seen to prevent re-notification next cycle.
-  for (const item of items) { if (item.id) notifiedEmailIds.add(item.id) }
-  capBaselineSet(notifiedEmailIds)
+  for (const item of items) { if (item.id) state.notifiedIds.add(item.id) }
+  capBaselineSet(state.notifiedIds)
 
   if (newItems.length === 0) {
-    // Count went up but scraper found no new IDs — fire a generic fallback.
-    fireNotification(
-      { title: APP_NAME, body: 'New email in your inbox.' },
-      () => { showPanelWindow(); showService('mail') }
-    )
+    // Unread counts can rise from sync churn, mailbox discovery, or messages
+    // outside the visible feed window. Only notify when we can identify a new
+    // visible item; otherwise this becomes a false "new mail" alert.
     return
   }
 
   if (newItems.length >= 4) {
     const senders = [...new Set(newItems.map((i) => i.sender).filter(Boolean))].slice(0, 4)
     fireNotification(
-      { title: `${newItems.length} new emails`, body: senders.join(', ') },
-      () => { showPanelWindow(); showService('mail') }
+      { title: `${newItems.length} new emails`, body: `${serviceLabel}: ${senders.join(', ')}` },
+      () => { showPanelWindow(); showService(serviceKey) }
     )
     return
   }
@@ -800,8 +812,8 @@ function diffAndNotifyMail(items, unreadCount) {
       },
       () => {
         showPanelWindow()
-        showService('mail')
-        const view = serviceViews.get('mail')
+        showService(serviceKey)
+        const view = serviceViews.get(serviceKey)
         if (view && !view.webContents.isDestroyed() && typeof rowIdx === 'number') {
           const idx = Math.trunc(rowIdx)
           if (Number.isInteger(idx) && idx >= 0 && idx <= 50000) {
@@ -935,9 +947,7 @@ function maybeNotifyCalendar(items) {
 function resetNotificationBaselines(provider) {
   const kinds = connections.PROVIDER_FEEDS[provider] || []
   if (kinds.includes('mail')) {
-    notifiedEmailIds.clear()
-    mailNotifReady = false
-    lastMailNotificationCount = 0
+    mailNotificationState.clear()
   }
   if (kinds.includes('calendar')) {
     remindedEventIds.clear()
@@ -1176,8 +1186,9 @@ function coreServiceForUrl(urlString) {
     return findOrReveal('sharepoint')
   }
   if (host === 'onenote.com' || host.endsWith('.onenote.com')) return findOrReveal('onenote')
-  // office.com / Microsoft 365 home: /launch/<app> deep links go to the app tab,
-  // anything else to the Office home tab.
+  // office.com / Microsoft 365 home: only explicit /launch/<app> deep links
+  // belong to another tab. Generic Microsoft 365/Copilot launcher URLs should
+  // stay in the app that produced them instead of hijacking the active service.
   if (
     host === 'office.com' ||
     host === 'www.office.com' ||
@@ -1187,7 +1198,7 @@ function coreServiceForUrl(urlString) {
   ) {
     const appMatch = route.match(/\/launch\/(word|excel|powerpoint|onenote|onedrive|sharepoint)/i)
     if (appMatch) return findOrReveal(appMatch[1].toLowerCase())
-    return findOrReveal('office')
+    return null
   }
   // New per-app hosts (word.cloud.microsoft and friends).
   const cloudApp = host.match(/^(word|excel|powerpoint|onenote|onedrive|planner)\.cloud\.microsoft$/)
@@ -1901,6 +1912,24 @@ function syncDiscoveredMailboxes(mailboxes) {
   const extra = mailboxes.filter((mb) => mb && mb.id !== 'primary')
   const discoveredKeys = new Set(extra.map((mb) => mailboxServiceKey(mb.id)))
   let changed = false
+  const cleanMailboxLabel = (value) =>
+    String(value || 'Mail')
+      .replace(/[\u200B-\u200D\u2060\uFEFF\uFFFD\uE000-\uF8FF\u25A0-\u25A1]/g, '')
+      .trim() || 'Mail'
+  // Discovered mailbox URLs come from scraping the OWA DOM, so they're untrusted.
+  // Pin them to the same origin as the (URL-locked) primary mailbox: a shared
+  // mailbox always lives on the same Outlook host. Anything else is dropped so a
+  // tampered/compromised page can't persist an arbitrary https tab as a mailbox.
+  let mailHost = ''
+  try { mailHost = new URL(findService('mail').url).hostname.toLowerCase() } catch { /* ignore */ }
+  const safeMailboxUrl = (value) => {
+    if (typeof value !== 'string' || !mailHost) return null
+    let parsed
+    try { parsed = new URL(value) } catch { return null }
+    if (parsed.protocol !== 'https:') return null
+    if (parsed.hostname.toLowerCase() !== mailHost) return null
+    return parsed.toString()
+  }
   const services = settings.services.filter((service) => {
     if (!service.mailboxManaged) return true
     if (discoveredKeys.has(service.key)) return true
@@ -1908,21 +1937,35 @@ function syncDiscoveredMailboxes(mailboxes) {
     return false
   })
   const mailIndex = services.findIndex((s) => s.key === 'mail')
-  const insertAt = mailIndex === -1 ? services.length : mailIndex + 1
+  let insertAt = mailIndex === -1 ? services.length : mailIndex + 1
   for (const mb of extra) {
     const key = mailboxServiceKey(mb.id)
-    if (services.some((s) => s.key === key)) continue
+    const label = cleanMailboxLabel(mb.label)
+    const url = safeMailboxUrl(mb.url)
+    if (!url) continue
+    const home = safeMailboxUrl(mb.home) || url
+    const existing = services.find((s) => s.key === key)
+    if (existing) {
+      if (existing.label !== label || existing.url !== url || existing.home !== home) {
+        existing.label = label
+        existing.url = url
+        existing.home = home
+        changed = true
+      }
+      continue
+    }
     services.splice(insertAt, 0, {
       key,
-      label: mb.label || 'Mail',
-      url: mb.url,
-      home: mb.home || mb.url,
+      label,
+      url,
+      home,
       icon: 'mail',
       builtin: false,
       visible: true,
       feed: 'mail',
       mailboxManaged: true
     })
+    insertAt += 1
     changed = true
   }
   if (changed) applySettings({ ...settings, services })
@@ -2185,13 +2228,20 @@ const MAILBOX_DISCOVER = `(() => {
     const origin = location.origin;
     const mailboxes = [];
     const seen = new Set();
+    const strip = (s) => String(s || '').replace(/[\\u200B-\\u200D\\u2060\\uFEFF\\uFFFD\\uE000-\\uF8FF\\u25A0-\\u25A1]/g, '').replace(/\\s+/g, ' ').trim();
+    const hrefFor = (el, fallbackEmail) => {
+      const link = el && (el.matches && el.matches('a[href]') ? el : el.querySelector && el.querySelector('a[href]'));
+      if (link && link.href && /^https?:/i.test(link.href)) return link.href;
+      return origin + '/mail/' + encodeURIComponent(fallbackEmail) + '/';
+    };
     const add = (id, label, url) => {
       const key = String(id || label || '').trim();
       if (!key || seen.has(key)) return;
+      const cleanLabel = strip(label) || 'Mail';
       seen.add(key);
       mailboxes.push({
         id: key.slice(0, 80),
-        label: String(label || 'Mail').trim().slice(0, 60),
+        label: cleanLabel.slice(0, 60),
         url: url || (origin + '/mail/'),
         home: url || (origin + '/mail/')
       });
@@ -2199,22 +2249,22 @@ const MAILBOX_DISCOVER = `(() => {
     add('primary', 'Mail', origin + '/mail/');
     const treeItems = Array.from(document.querySelectorAll('[role="treeitem"][aria-level="1"]'));
     for (const item of treeItems) {
-      const label = (item.getAttribute('aria-label') || item.textContent || '').replace(/\\s+/g, ' ').trim();
+      const label = strip(item.getAttribute('aria-label') || item.textContent || '');
       if (!label || /^(inbox|favorites)$/i.test(label)) continue;
       if (/^(drafts|sent items|sent|deleted items|junk email|archive|outbox|notes)$/i.test(label)) continue;
       const emailMatch = label.match(/[\\w.+-]+@[\\w.-]+/);
       if (emailMatch) {
         const email = emailMatch[0];
-        add(email, label.split(',')[0].trim() || email, origin + '/mail/' + encodeURIComponent(email) + '/');
+        add(email, label.split(',')[0].trim() || email, hrefFor(item, email));
       }
     }
     const groups = document.querySelectorAll('[role="tree"] [role="group"] > [role="treeitem"]');
     for (const g of groups) {
-      const label = (g.getAttribute('aria-label') || g.textContent || '').replace(/\\s+/g, ' ').trim();
+      const label = strip(g.getAttribute('aria-label') || g.textContent || '');
       const emailMatch = label && label.match(/[\\w.+-]+@[\\w.-]+/);
       if (emailMatch) {
         const email = emailMatch[0];
-        add(email, label.split(',')[0].trim() || email, origin + '/mail/' + encodeURIComponent(email) + '/');
+        add(email, label.split(',')[0].trim() || email, hrefFor(g, email));
       }
     }
     return { mailboxes };
@@ -2427,11 +2477,17 @@ async function refreshFeedFromApi(key, feed) {
   if (feed.kind === 'mail') {
     const unread = await connections.getMailUnreadCount()
     if ((feed.gen || 0) !== gen) return
-    if (serviceState[key] && serviceState[key].unreadCount !== unread) {
+    // null means "couldn't determine right now" — keep the cached badge and feed
+    // the diff the last known count so a transient blip can't zero the badge or
+    // wipe the notification baseline.
+    if (typeof unread === 'number' && serviceState[key] && serviceState[key].unreadCount !== unread) {
       serviceState[key].unreadCount = unread
       changed = true
     }
-    diffAndNotifyMail(feed.items, unread)
+    const effectiveUnread = typeof unread === 'number'
+      ? unread
+      : (serviceState[key] ? serviceState[key].unreadCount : 0)
+    diffAndNotifyMail(feed.items, effectiveUnread, key)
   } else if (feed.kind === 'asana') {
     if (serviceState[key] && serviceState[key].unreadCount !== feed.items.length) {
       serviceState[key].unreadCount = feed.items.length
@@ -2449,8 +2505,11 @@ function refreshFeed(key) {
   if (!feed) {
     return
   }
+  const service = findService(key)
   // When the provider behind this feed is connected, prefer the API entirely.
-  if (connections.feedIsLive(feed.kind)) {
+  // Shared Outlook mailboxes need their own view scrape; Graph's /me inbox would
+  // duplicate the primary inbox under every discovered mailbox.
+  if (connections.feedIsLive(feed.kind) && !(feed.kind === 'mail' && service && service.mailboxManaged)) {
     refreshFeedFromApi(key, feed).catch((err) => {
       // Surface the real reason — a 403 (missing Graph consent), 5xx, or parse
       // error otherwise vanishes here and looks like "the API just doesn't work".
@@ -2488,7 +2547,10 @@ function refreshFeed(key) {
         // (ids, startIso), so the same notification diffing applies pre-connect.
         if (feed.kind === 'mail') {
           const mailState = serviceState[key]
-          diffAndNotifyMail(feed.items, mailState ? mailState.unreadCount : 0)
+          const visibleUnread = service && service.mailboxManaged
+            ? feed.items.length
+            : mailState ? mailState.unreadCount : 0
+          diffAndNotifyMail(feed.items, visibleUnread, key)
         } else if (feed.kind === 'asana') {
           // Badge mirrors the visible task count, same as the API path.
           if (serviceState[key] && serviceState[key].unreadCount !== feed.items.length) {
@@ -2556,12 +2618,20 @@ function startFeedTimer() {
 
 /* ---------- Tray ---------- */
 function mailUnread() {
+  // Sum every mail feed (primary inbox + any discovered shared mailboxes) so the
+  // tray/Dock badge reflects total unread, not just the first mailbox.
+  let total = 0
+  let found = false
   for (const key of Object.keys(serviceFeeds)) {
     if (serviceFeeds[key].kind === 'mail') {
-      return serviceState[key] ? serviceState[key].unreadCount : 0
+      found = true
+      const count = serviceState[key] ? serviceState[key].unreadCount : 0
+      if (typeof count === 'number') total += count
     }
   }
-  return serviceState.mail ? serviceState.mail.unreadCount : 0
+  if (found) return total
+  const fallback = serviceState.mail ? serviceState.mail.unreadCount : 0
+  return typeof fallback === 'number' ? fallback : 0
 }
 
 function createTray() {

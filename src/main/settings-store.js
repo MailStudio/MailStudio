@@ -204,12 +204,16 @@ function sanitizeService(input, builtinDefaults) {
   }
 
   const builtin = builtinDefaults.get(input.key)
+  const cleanLabel = (value) =>
+    String(value || '')
+      .replace(/[\u200B-\u200D\u2060\uFEFF\uFFFD\uE000-\uF8FF\u25A0-\u25A1]/g, '')
+      .trim()
   return {
     key: typeof input.key === 'string' && input.key ? input.key : `site-${Math.abs(hash(url))}`,
     // Built-in labels are fixed to the default (they can't be renamed in the UI),
     // so a renamed default (e.g. Office → Copilot) reaches existing users. Only
     // pinned custom sites keep a user-supplied label.
-    label: builtin ? builtin.label : ((typeof input.label === 'string' && input.label.trim()) || 'Site'),
+    label: builtin ? builtin.label : (cleanLabel(input.label) || 'Site'),
     // Built-in services have fixed URLs that cannot be overridden via settings.
     // Pinning them to the hardcoded defaults prevents a tampered settings file
     // (or a compromised renderer) from redirecting the Mail tab to a phishing domain.

@@ -19,8 +19,11 @@ own web UI in its tab, using that surface's normal session.
 
 ## No secrets, no servers
 
-- **PKCE OAuth** — the authorization-code + PKCE flow means there is **no client
-  secret** to embed or store. You bring your own free app registration.
+- **PKCE OAuth** — the authorization-code + PKCE flow means **no client secret is
+  shipped in MailStudio**. Microsoft needs no secret at all. Asana's API requires
+  a client secret, so you supply your own (from your own free app registration);
+  it's sealed in the OS keychain via `safeStorage`, never written in plaintext and
+  never embedded in the repo.
 - **No telemetry, no analytics, no third-party backend.** Your account data flows
   directly between your machine and Microsoft / Asana — nothing else sees it. The
   only other network contact is the update check against GitHub Releases (packaged

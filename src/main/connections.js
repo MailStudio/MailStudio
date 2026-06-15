@@ -228,10 +228,21 @@ const refreshPromises = {}
 // A refresh failure only means the grant is dead when the token endpoint says
 // so explicitly. Network blips, timeouts (TokenError status 0), 429s and 5xx
 // are transient and must not tear the connection down.
+const DEAD_GRANT_OAUTH_ERRORS = new Set([
+  'invalid_grant',        // refresh token expired/revoked
+  'interaction_required', // user must re-consent / re-auth
+  'invalid_client',       // client credentials no longer valid (e.g. Asana secret)
+  'unauthorized_client'   // client not allowed this grant anymore
+])
+
 function isGrantDead(err) {
   if (!(err instanceof oauth.TokenError)) return false
-  if (err.oauthError === 'invalid_grant' || err.oauthError === 'interaction_required') return true
-  return err.status === 400 || err.status === 401
+  // Only tear the connection down on a definitive auth rejection. The token
+  // endpoint signals these via an OAuth `error` code in the body (always a 400
+  // per the spec) or a 401. A bare 400 with no recognized error code is treated
+  // as transient — a malformed/throttled/server blip must not force a reconnect.
+  if (err.oauthError && DEAD_GRANT_OAUTH_ERRORS.has(err.oauthError)) return true
+  return err.status === 401
 }
 
 // Returns a valid access token, refreshing if expired. Returns null (and moves
@@ -289,12 +300,34 @@ async function refreshAccessToken(provider, token) {
 // untouched — throttling is not an auth problem.
 const nextAllowedAt = { microsoft: 0, asana: 0 }
 
+// Generic (non-auth, non-throttle) failures — 5xx without Retry-After, network
+// drops, parse errors — get exponential backoff so a flapping/unreachable API
+// isn't hammered every feed tick. The streak resets on the first success.
+const GENERIC_BACKOFF_BASE_MS = 30000
+const GENERIC_BACKOFF_MAX_MS = 300000
+const apiFailureStreak = { microsoft: 0, asana: 0 }
+
 function isThrottled(provider) {
   return Boolean(provider) && Date.now() < (nextAllowedAt[provider] || 0)
 }
 
 function noteThrottle(provider, err) {
+  if (!provider) return
   nextAllowedAt[provider] = Date.now() + (err.retryAfter || 60) * 1000
+  // An explicit server throttle isn't part of a generic failure streak.
+  apiFailureStreak[provider] = 0
+}
+
+function noteApiSuccess(provider) {
+  if (provider) apiFailureStreak[provider] = 0
+}
+
+function noteApiFailure(provider) {
+  if (!provider) return
+  const streak = (apiFailureStreak[provider] || 0) + 1
+  apiFailureStreak[provider] = streak
+  const backoff = Math.min(GENERIC_BACKOFF_BASE_MS * 2 ** (streak - 1), GENERIC_BACKOFF_MAX_MS)
+  nextAllowedAt[provider] = Math.max(nextAllowedAt[provider] || 0, Date.now() + backoff)
 }
 
 // Run an authed API call, transparently refreshing once on a 401.
@@ -302,7 +335,9 @@ async function withToken(provider, fn) {
   let accessToken = await getAccessToken(provider)
   if (!accessToken) return null
   try {
-    return await fn(accessToken)
+    const out = await fn(accessToken)
+    noteApiSuccess(provider)
+    return out
   } catch (err) {
     if (err instanceof apiFeeds.ThrottledError) {
       noteThrottle(provider, err)
@@ -319,7 +354,9 @@ async function withToken(provider, fn) {
       accessToken = await getAccessToken(provider)
       if (!accessToken) return null
       try {
-        return await fn(accessToken)
+        const out2 = await fn(accessToken)
+        noteApiSuccess(provider)
+        return out2
       } catch (err2) {
         if (err2 instanceof apiFeeds.ThrottledError) {
           noteThrottle(provider, err2)
@@ -330,12 +367,14 @@ async function withToken(provider, fn) {
           return null
         }
         console.warn(`[api] ${provider} request failed after refresh:`, err2 && err2.message)
+        noteApiFailure(provider)
         throw err2
       }
     }
     // Non-auth, non-throttle failure (e.g. 403 missing consent, 5xx, network).
-    // Log it — these otherwise disappear into the feed's empty catch handler.
+    // Log it and apply exponential backoff so we stop hammering a flapping API.
     console.warn(`[api] ${provider} request failed:`, err && err.message)
+    noteApiFailure(provider)
     throw err
   }
 }
@@ -348,10 +387,11 @@ async function getMailFeed() {
 async function getMailUnreadCount() {
   if (isThrottled('microsoft')) return null
   const count = await withToken('microsoft', (t) => apiFeeds.fetchMailUnreadCount(t))
-  if (typeof count === 'number') return count
-  // null can mean "just got throttled" — report null so the caller keeps its
-  // cached badge instead of zeroing it.
-  return isThrottled('microsoft') ? null : 0
+  // A real count (including 0) comes back as a number. Anything else means we
+  // couldn't determine it — missing/expired token, a fresh throttle, or a
+  // transient API failure. Report null so the caller keeps its cached badge
+  // rather than flickering the unread count to zero on a blip.
+  return typeof count === 'number' ? count : null
 }
 
 async function getCalendarFeed() {

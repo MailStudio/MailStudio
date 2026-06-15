@@ -9,6 +9,7 @@ const ROOT = path.resolve(__dirname, '..', '..')
 const MAIN_JS = fs.readFileSync(path.join(ROOT, 'src', 'main', 'main.js'), 'utf8')
 const PANEL_JS = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'panel.js'), 'utf8')
 const PANEL_HTML = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'panel.html'), 'utf8')
+const CONNECTIONS_JS = fs.readFileSync(path.join(ROOT, 'src', 'main', 'connections.js'), 'utf8')
 
 // settings-store requires electron's `app`.
 const electronPath = require.resolve('electron')
@@ -89,6 +90,21 @@ test('settings normalize persists the expanded QoL surface', () => {
   assert.equal(settings.downloadHistory[0].title, 'Archive')
 })
 
+test('mailbox-managed labels strip Outlook icon glyphs and square placeholders', () => {
+  const settings = store.normalize({
+    services: [{
+      key: 'mailbox',
+      label: '\uE000\u25A1support@joinparade.app',
+      url: 'https://outlook.office.com/mail/support%40joinparade.app/',
+      mailboxManaged: true,
+      feed: 'mail'
+    }]
+  })
+  const mailbox = settings.services.find((service) => service.key === 'mailbox')
+  assert.ok(mailbox)
+  assert.equal(mailbox.label, 'support@joinparade.app')
+})
+
 test('fetchMail shapes Outlook-owned deep links for inbox items', async () => {
   await withMockedFetch(async () => mockJsonResponse(200, {
     value: [{
@@ -128,10 +144,19 @@ test('fetchAsanaTasks preserves a per-task permalink for every API item', async 
 })
 
 test('renderer feed clicks pass stable item identifiers for mail, calendar, and asana', () => {
-  const itemIdCount = (PANEL_JS.match(/itemId: item\.id \|\| null/g) || []).length
-  assert.equal(itemIdCount, 3)
+  // The three feed kinds share one dispatch helper, so the stable identifiers are
+  // built once and the kind only selects taskUrl (asana) vs webLink (mail/cal).
+  assert.match(PANEL_JS, /itemId: item\.id \|\| null/)
   assert.match(PANEL_JS, /deepLink: item\.deepLink \|\| null/)
-  assert.match(PANEL_JS, /taskUrl: item\.taskUrl \|\| null/)
+  assert.match(PANEL_JS, /if \(feed\.kind === 'asana'\) command\.taskUrl = item\.taskUrl \|\| null/)
+  assert.match(PANEL_JS, /else command\.webLink = item\.webLink \|\| null/)
+})
+
+test('feed rows are keyboard-operable buttons, not mouse-only divs', () => {
+  assert.match(PANEL_JS, /row\.setAttribute\('role', 'button'\)/)
+  assert.match(PANEL_JS, /row\.tabIndex = 0/)
+  assert.match(PANEL_JS, /row\.addEventListener\('keydown'/)
+  assert.match(PANEL_JS, /event\.key === 'Enter' \|\| event\.key === ' '/)
 })
 
 test('main feed click handler resolves clicked items by stable id before row fallback', () => {
@@ -140,6 +165,32 @@ test('main feed click handler resolves clicked items by stable id before row fal
   assert.match(MAIN_JS, /stringOrNull\(command\.deepLink\)/)
   assert.match(MAIN_JS, /stringOrNull\(command\.taskUrl\)/)
   assert.match(MAIN_JS, /stringOrNull\(recentItem && recentItem\.taskUrl\)/)
+})
+
+test('generic Microsoft 365 URLs no longer forward clicks to the Copilot tab', () => {
+  assert.match(MAIN_JS, /const appMatch = route\.match\(\/\\\/launch\\\/\(word\|excel\|powerpoint\|onenote\|onedrive\|sharepoint\)\/i\)/)
+  assert.match(MAIN_JS, /if \(appMatch\) return findOrReveal\(appMatch\[1\]\.toLowerCase\(\)\)/)
+  assert.doesNotMatch(MAIN_JS, /return findOrReveal\('office'\)/)
+})
+
+test('shared mailbox feeds bypass the primary Microsoft Graph mail feed', () => {
+  assert.match(MAIN_JS, /mailboxManaged/)
+  assert.match(
+    MAIN_JS,
+    /connections\.feedIsLive\(feed\.kind\) && !\(feed\.kind === 'mail' && service && service\.mailboxManaged\)/
+  )
+})
+
+test('mail notification baselines are tracked per service key', () => {
+  assert.match(MAIN_JS, /const mailNotificationState = new Map\(\)/)
+  assert.match(MAIN_JS, /function mailNotifyState\(serviceKey\)/)
+  assert.match(MAIN_JS, /diffAndNotifyMail\(items, unreadCount, serviceKey = 'mail'\)/)
+  assert.match(MAIN_JS, /showService\(serviceKey\)/)
+})
+
+test('mail notifications require a newly identified message, not just count churn', () => {
+  assert.match(MAIN_JS, /if \(newItems\.length === 0\) \{[\s\S]*?return[\s\S]*?\}/)
+  assert.ok(!MAIN_JS.includes('New email in ${serviceLabel}.'))
 })
 
 test('settings pages declared in HTML match PAGE_TITLES entries in the renderer', () => {
@@ -193,4 +244,82 @@ test('transient overlays have both open and close handlers so BrowserViews can d
   assert.match(MAIN_JS, /case 'close-transient-overlay':/)
   assert.match(PANEL_JS, /window\.panelApi\.sendCommand\(\{ type: 'open-transient-overlay' \}\)/)
   assert.match(PANEL_JS, /window\.panelApi\.sendCommand\(\{ type: 'close-transient-overlay' \}\)/)
+})
+
+/* ---------- Audit-fix regressions ---------- */
+
+test('shared mailbox views are kept resident (never hibernated)', () => {
+  // needsLiveView must treat mailboxManaged mail feeds as live, otherwise the
+  // reaper hibernates them and their scrape-only feed/notifications freeze.
+  const block = MAIN_JS.match(/function needsLiveView\(key\) \{([\s\S]*?)\n\}/)
+  assert.ok(block, 'needsLiveView missing')
+  assert.match(block[1], /feed\.kind === 'mail' && service && service\.mailboxManaged/)
+})
+
+test('tray/dock badge sums unread across every mail feed', () => {
+  const block = MAIN_JS.match(/function mailUnread\(\) \{([\s\S]*?)\n\}/)
+  assert.ok(block, 'mailUnread missing')
+  // Must accumulate rather than return the first mail feed's count.
+  assert.match(block[1], /total \+= count/)
+  assert.doesNotMatch(block[1], /return serviceState\[key\] \? serviceState\[key\]\.unreadCount : 0/)
+})
+
+test('mail unread count reports null (not 0) when it cannot be determined', () => {
+  const block = CONNECTIONS_JS.match(/async function getMailUnreadCount\(\) \{([\s\S]*?)\n\}/)
+  assert.ok(block, 'getMailUnreadCount missing')
+  assert.match(block[1], /typeof count === 'number' \? count : null/)
+  // The old code coerced a missing token to 0, flickering the badge.
+  assert.doesNotMatch(block[1], /: 0\b/)
+})
+
+test('api refresh keeps the cached badge when unread count is null', () => {
+  assert.match(MAIN_JS, /typeof unread === 'number' && serviceState\[key\]/)
+  assert.match(MAIN_JS, /const effectiveUnread = typeof unread === 'number'/)
+})
+
+test('a bare 400 from the token endpoint is not treated as a dead grant', () => {
+  const block = CONNECTIONS_JS.match(/function isGrantDead\(err\) \{([\s\S]*?)\n\}/)
+  assert.ok(block, 'isGrantDead missing')
+  assert.match(block[1], /DEAD_GRANT_OAUTH_ERRORS\.has\(err\.oauthError\)/)
+  assert.match(block[1], /return err\.status === 401/)
+  // The blanket 400 catch-all must be gone.
+  assert.doesNotMatch(block[1], /err\.status === 400/)
+})
+
+test('generic API failures get exponential backoff that resets on success', () => {
+  assert.match(CONNECTIONS_JS, /function noteApiFailure\(provider\)/)
+  assert.match(CONNECTIONS_JS, /function noteApiSuccess\(provider\)/)
+  assert.match(CONNECTIONS_JS, /GENERIC_BACKOFF_BASE_MS \* 2 \*\* \(streak - 1\)/)
+  // withToken must record success and failure around the API call.
+  assert.match(CONNECTIONS_JS, /noteApiSuccess\(provider\)/)
+  assert.match(CONNECTIONS_JS, /noteApiFailure\(provider\)/)
+})
+
+test('downloads drawer clears rows and closes when the list empties', () => {
+  const block = PANEL_JS.match(/function renderDownloads\(\{ list, activeCount \}\) \{([\s\S]*?)\n  dlToggleBtn\.hidden = false/)
+  assert.ok(block, 'renderDownloads empty branch missing')
+  assert.match(block[1], /if \(dlList\) dlList\.innerHTML = ''/)
+  assert.match(block[1], /if \(dlDrawer\) dlDrawer\.hidden = true/)
+})
+
+test('scratchpad rejects stale snapshots that predate an in-flight save', () => {
+  assert.match(PANEL_JS, /let lastSavedScratch = null/)
+  assert.match(PANEL_JS, /lastSavedScratch === null \|\| snapshot\.scratch === lastSavedScratch/)
+  // Both save paths record what was persisted.
+  assert.ok((PANEL_JS.match(/lastSavedScratch = scratchArea\.value/g) || []).length >= 2)
+})
+
+test('notification toggles are disabled while their provider is disconnected', () => {
+  assert.match(PANEL_JS, /toggle\.disabled = !connected/)
+  assert.match(PANEL_JS, /if \(btn\.disabled\) return/)
+})
+
+test('discovered mailbox URLs are pinned to the primary Outlook origin', () => {
+  const block = MAIN_JS.match(/function syncDiscoveredMailboxes\(mailboxes\) \{([\s\S]*?)\n\}/)
+  assert.ok(block, 'syncDiscoveredMailboxes missing')
+  assert.match(block[1], /const safeMailboxUrl = \(value\) =>/)
+  assert.match(block[1], /parsed\.protocol !== 'https:'/)
+  assert.match(block[1], /parsed\.hostname\.toLowerCase\(\) !== mailHost/)
+  // A mailbox whose URL fails validation is dropped, not persisted.
+  assert.match(block[1], /const url = safeMailboxUrl\(mb\.url\)\n\s*if \(!url\) continue/)
 })

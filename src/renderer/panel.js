@@ -68,6 +68,11 @@ let latest = null
 let dragIndex = null
 // Pending scratch-pad save debounce (null when no save is in flight).
 let scratchTimer = null
+// The scratch text we last persisted (or first adopted from a snapshot). Used to
+// reject stale snapshots: a feed poll captured before an in-flight save still
+// carries the old text and must not revert what was just typed. null until the
+// first snapshot/edit so the initial persisted value still loads.
+let lastSavedScratch = null
 // Provider keys whose "Developer setup" panel the user explicitly opened, so
 // re-renders don't snap it shut while a saved client ID is being edited.
 const devOpen = new Set()
@@ -155,6 +160,12 @@ function renderFeed(service) {
   for (const item of feed.items) {
     const row = document.createElement('div')
     row.className = 'feed-item'
+    // Feed rows are the sidebar's primary action surface, so expose them as
+    // real buttons: focusable, announced by screen readers, and operable with
+    // Enter/Space — not mouse-only div clicks.
+    row.setAttribute('role', 'button')
+    row.tabIndex = 0
+    let ariaLabel = ''
 
     if (feed.kind === 'mail') {
       row.classList.add('feed-mail')
@@ -170,17 +181,7 @@ function renderFeed(service) {
         <div class="feed-subject">${escapeHtml(cleanText(item.subject) || '(no subject)')}</div>
         ${preview ? `<div class="feed-preview">${escapeHtml(preview)}</div>` : ''}
       `
-      row.addEventListener('click', (event) => {
-        window.panelApi.sendCommand({
-          type: 'open-feed-item',
-          serviceKey: service.key,
-          itemId: item.id || null,
-          rowIdx: item.rowIdx,
-          deepLink: item.deepLink || null,
-          webLink: item.webLink || null,
-          split: event.metaKey || event.ctrlKey
-        })
-      })
+      ariaLabel = `Open email from ${cleanText(item.sender) || 'unknown sender'}: ${cleanText(item.subject) || 'no subject'}`
     } else if (feed.kind === 'calendar') {
       row.classList.add('feed-event')
       if (item.cancelled) row.classList.add('feed-event-cancelled')
@@ -189,17 +190,7 @@ function renderFeed(service) {
         ${item.cancelled ? '<div class="feed-event-status">Cancelled</div>' : ''}
         ${item.time ? `<div class="feed-event-time">${escapeHtml(item.time)}</div>` : ''}
       `
-      row.addEventListener('click', (event) => {
-        window.panelApi.sendCommand({
-          type: 'open-feed-item',
-          serviceKey: service.key,
-          itemId: item.id || null,
-          rowIdx: item.rowIdx,
-          deepLink: item.deepLink || null,
-          webLink: item.webLink || null,
-          split: event.metaKey || event.ctrlKey
-        })
-      })
+      ariaLabel = `Open event: ${cleanText(item.title) || 'event'}${item.time ? `, ${item.time}` : ''}`
     } else {
       row.classList.add('feed-task')
       const subs = (item.subtasks || [])
@@ -215,18 +206,30 @@ function renderFeed(service) {
         ${subs}
         ${dueLabel ? `<div class="${dueClass}">${escapeHtml(dueLabel)}</div>` : ''}
       `
-      row.addEventListener('click', (event) => {
-        window.panelApi.sendCommand({
-          type: 'open-feed-item',
-          serviceKey: service.key,
-          itemId: item.id || null,
-          rowIdx: item.rowIdx,
-          deepLink: item.deepLink || null,
-          taskUrl: item.taskUrl || null,
-          split: event.metaKey || event.ctrlKey
-        })
-      })
+      ariaLabel = `Open task: ${cleanText(item.name) || 'task'}${dueLabel ? `, ${dueLabel}` : ''}`
     }
+
+    row.setAttribute('aria-label', ariaLabel)
+    const activate = (event) => {
+      const command = {
+        type: 'open-feed-item',
+        serviceKey: service.key,
+        itemId: item.id || null,
+        rowIdx: item.rowIdx,
+        deepLink: item.deepLink || null,
+        split: Boolean(event.metaKey || event.ctrlKey)
+      }
+      if (feed.kind === 'asana') command.taskUrl = item.taskUrl || null
+      else command.webLink = item.webLink || null
+      window.panelApi.sendCommand(command)
+    }
+    row.addEventListener('click', activate)
+    row.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
+        event.preventDefault()
+        activate(event)
+      }
+    })
 
     wrap.appendChild(row)
   }
@@ -720,6 +723,8 @@ function renderNotifSettings(snapshot) {
   for (const btn of document.querySelectorAll('[data-notif]')) {
     const on = notif[btn.dataset.notif] !== false
     btn.classList.toggle('on', on)
+    btn.setAttribute('role', 'switch')
+    btn.setAttribute('aria-checked', on ? 'true' : 'false')
   }
   // Reflect live connection state per row: a service whose provider isn't
   // connected shows a muted "connect first" hint and can't actually fire.
@@ -728,6 +733,13 @@ function renderNotifSettings(snapshot) {
     const provider = row.dataset.notifProvider
     const connected = provider === 'teams' ? true : Boolean(conn[provider] && conn[provider].status === 'connected')
     row.classList.toggle('disconnected', !connected)
+    // A disconnected provider can't fire, so block its toggle instead of letting
+    // it flip a setting that has no effect (and looks broken).
+    const toggle = row.querySelector('[data-notif]')
+    if (toggle) {
+      toggle.disabled = !connected
+      toggle.setAttribute('aria-disabled', String(!connected))
+    }
     const sub = row.querySelector('[data-notif-sub]')
     if (sub) {
       // Capture the original copy once so we can restore it on reconnect.
@@ -824,7 +836,13 @@ function render(snapshot) {
   // no save is pending — a snapshot taken before the debounce fires still
   // carries the old text and would revert what was just typed).
   if (document.activeElement !== scratchArea && scratchTimer === null && typeof snapshot.scratch === 'string') {
-    scratchArea.value = snapshot.scratch
+    // Only adopt the snapshot's scratch when it reflects our latest local save
+    // (or we've never edited). A stale snapshot that predates an in-flight save
+    // carries the old text and would otherwise revert the user's edit.
+    if (lastSavedScratch === null || snapshot.scratch === lastSavedScratch) {
+      scratchArea.value = snapshot.scratch
+      lastSavedScratch = snapshot.scratch
+    }
   }
 
   if (snapshot.settingsOpen) {
@@ -1056,6 +1074,7 @@ toggleButton.addEventListener('click', () => {
 
 for (const btn of document.querySelectorAll('[data-notif]')) {
   btn.addEventListener('click', () => {
+    if (btn.disabled) return
     const notif = Object.assign({ mail: true, calendar: true, asana: true, teams: true, preview: true, quietStart: '', quietEnd: '' }, latest ? latest.notif : {})
     notif[btn.dataset.notif] = !notif[btn.dataset.notif]
     sendNotif(notif)
@@ -1387,6 +1406,11 @@ function renderDownloads({ list, activeCount }) {
   if (list.length === 0) {
     dlToggleBtn.hidden = true
     if (dlBadge) dlBadge.hidden = true
+    // Clear any leftover rows and close the now-orphaned drawer so a cleared or
+    // emptied list can't leave ghost downloads (or an empty drawer) on screen.
+    if (dlList) dlList.innerHTML = ''
+    if (dlEmpty) dlEmpty.hidden = false
+    if (dlDrawer) dlDrawer.hidden = true
     return
   }
   dlToggleBtn.hidden = false
@@ -2061,6 +2085,7 @@ scratchArea.addEventListener('input', () => {
   clearTimeout(scratchTimer)
   scratchTimer = setTimeout(() => {
     scratchTimer = null
+    lastSavedScratch = scratchArea.value
     window.panelApi.sendCommand({ type: 'save-scratch', text: scratchArea.value })
   }, 500)
 })
@@ -2070,6 +2095,7 @@ scratchArea.addEventListener('blur', () => {
   if (scratchTimer === null) return
   clearTimeout(scratchTimer)
   scratchTimer = null
+  lastSavedScratch = scratchArea.value
   window.panelApi.sendCommand({ type: 'save-scratch', text: scratchArea.value })
 })
 

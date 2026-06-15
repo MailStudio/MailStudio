@@ -430,6 +430,12 @@ body.collapsed.mode-vanish:not(.settings-open) .sidebar {
   background: var(--hover);
 }
 
+.feed-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: var(--hover);
+}
+
 .feed-mail .feed-sender {
   font-size: 12px;
   font-weight: 650;
@@ -2260,6 +2266,7 @@ body.collapsed.mode-rail:not(.settings-open) .notif-setup-main { justify-content
 
 /* Notification row reflects connection state */
 .set-notif-row.disconnected { opacity: 0.6; }
+.set-switch:disabled { cursor: not-allowed; }
 
 /* Connected but onboarding never finished — notifications won't fire yet. */
 .set-notif-warn {
