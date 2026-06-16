@@ -1,6 +1,6 @@
 {
   "name": "mailstudio",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "Secure Outlook web wrapper with tray notifications, calendar, tasks, and Asana.",
   "main": "src/main/main.js",
   "scripts": {
@@ -9,8 +9,9 @@
     "dist:mac": "electron-builder --mac",
     "dist:dir": "electron-builder --dir",
     "release": "electron-builder --publish always",
-    "check": "node --check src/main/main.js && node --check src/main/settings-store.js && node --check src/main/service-preload.js && node --check src/main/panel-preload.js && node --check src/main/secure-store.js && node --check src/main/oauth.js && node --check src/main/api-feeds.js && node --check src/main/connections.js && node --check src/main/updater.js && node --check src/renderer/panel.js && node --check src/renderer/menu.js && node --check scripts/after-pack.js",
-    "test": "node --test test/settings-store.test.js tooling/qa/full-regression.test.js"
+    "check": "node --check src/main/main.js && node --check src/main/settings-store.js && node --check src/main/service-preload.js && node --check src/main/panel-preload.js && node --check src/main/secure-store.js && node --check src/main/oauth.js && node --check src/main/api-feeds.js && node --check src/main/connections.js && node --check src/main/updater.js && node --check src/renderer/panel.js && node --check src/renderer/menu.js && node --check scripts/after-pack.js && node --check tooling/qa/make-panel-browser-harness.js && node --check tooling/qa/npm-simulator.test.js",
+    "test": "node --test test/settings-store.test.js tooling/qa/full-regression.test.js tooling/qa/npm-simulator.test.js",
+    "qa:simulator": "node --test tooling/qa/npm-simulator.test.js"
   },
   "repository": {
     "type": "git",
@@ -88,6 +89,8 @@
       "identity": null,
       "gatekeeperAssess": false,
       "extendInfo": {
+        "NSCameraUsageDescription": "MailStudio uses the camera only when you join a Teams meeting or call.",
+        "NSMicrophoneUsageDescription": "MailStudio uses the microphone only when you join a Teams meeting or call.",
         "NSBluetoothAlwaysUsageDescription": "MailStudio uses Bluetooth to communicate with hardware security keys when signing in.",
         "NSBluetoothPeripheralUsageDescription": "MailStudio uses Bluetooth to communicate with hardware security keys when signing in."
       }

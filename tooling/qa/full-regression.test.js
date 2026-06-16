@@ -10,6 +10,12 @@ const MAIN_JS = fs.readFileSync(path.join(ROOT, 'src', 'main', 'main.js'), 'utf8
 const PANEL_JS = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'panel.js'), 'utf8')
 const PANEL_HTML = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'panel.html'), 'utf8')
 const CONNECTIONS_JS = fs.readFileSync(path.join(ROOT, 'src', 'main', 'connections.js'), 'utf8')
+const MENU_JS = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'menu.js'), 'utf8')
+const UPDATER_JS = fs.readFileSync(path.join(ROOT, 'src', 'main', 'updater.js'), 'utf8')
+const BUILD_SH = fs.readFileSync(path.join(ROOT, 'build.sh'), 'utf8')
+const DEV_DOCS = fs.readFileSync(path.join(ROOT, 'docs', 'development.md'), 'utf8')
+const SECURITY_DOCS = fs.readFileSync(path.join(ROOT, 'docs', 'security.md'), 'utf8')
+const PACKAGE_JSON = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
 
 // settings-store requires electron's `app`.
 const electronPath = require.resolve('electron')
@@ -246,6 +252,22 @@ test('transient overlays have both open and close handlers so BrowserViews can d
   assert.match(PANEL_JS, /window\.panelApi\.sendCommand\(\{ type: 'close-transient-overlay' \}\)/)
 })
 
+test('transient overlay commands are emitted only when overlay visibility changes', () => {
+  const commandPaletteBlock = PANEL_JS.match(/function openCommandPalette\(\) \{([\s\S]*?)function openShortcutGuide/)
+  assert.ok(commandPaletteBlock, 'command palette overlay helpers missing')
+  assert.match(commandPaletteBlock[1], /const wasHidden = commandPalette\.hidden/)
+  assert.match(commandPaletteBlock[1], /if \(wasHidden\) window\.panelApi\.sendCommand\(\{ type: 'open-transient-overlay' \}\)/)
+  assert.match(commandPaletteBlock[1], /const wasOpen = commandPalette && !commandPalette\.hidden/)
+  assert.match(commandPaletteBlock[1], /if \(wasOpen && \(!shortcutGuide \|\| shortcutGuide\.hidden\)\)/)
+
+  const shortcutBlock = PANEL_JS.match(/function openShortcutGuide\(\) \{([\s\S]*?)const commandPaletteBtn/)
+  assert.ok(shortcutBlock, 'shortcut overlay helpers missing')
+  assert.match(shortcutBlock[1], /const wasHidden = shortcutGuide\.hidden/)
+  assert.match(shortcutBlock[1], /if \(wasHidden\) window\.panelApi\.sendCommand\(\{ type: 'open-transient-overlay' \}\)/)
+  assert.match(shortcutBlock[1], /const wasOpen = shortcutGuide && !shortcutGuide\.hidden/)
+  assert.match(shortcutBlock[1], /if \(wasOpen && \(!commandPalette \|\| commandPalette\.hidden\)\)/)
+})
+
 /* ---------- Audit-fix regressions ---------- */
 
 test('shared mailbox views are kept resident (never hibernated)', () => {
@@ -322,4 +344,76 @@ test('discovered mailbox URLs are pinned to the primary Outlook origin', () => {
   assert.match(block[1], /parsed\.hostname\.toLowerCase\(\) !== mailHost/)
   // A mailbox whose URL fails validation is dropped, not persisted.
   assert.match(block[1], /const url = safeMailboxUrl\(mb\.url\)\n\s*if \(!url\) continue/)
+})
+
+test('shared mailbox scrape results are accepted even when the primary Graph mail feed is live', () => {
+  const block = MAIN_JS.match(/function refreshFeed\(key\) \{([\s\S]*?)\n\}/)
+  assert.ok(block, 'refreshFeed missing')
+  assert.match(
+    block[1],
+    /connections\.feedIsLive\(feed\.kind\) && !\(feed\.kind === 'mail' && service && service\.mailboxManaged\)/
+  )
+})
+
+test('summary strip accumulates unread mail across every visible mail feed', () => {
+  const block = PANEL_JS.match(/function renderSummary\(snapshot\) \{([\s\S]*?)\n\}/)
+  assert.ok(block, 'renderSummary missing')
+  assert.match(block[1], /mail \+= \(service\.feed\.items \|\| \[\]\)\.filter/)
+  assert.doesNotMatch(block[1], /mail = \(service\.feed\.items \|\| \[\]\)\.filter/)
+})
+
+test('service preload page metadata is handled by main and sender-scoped to BrowserViews', () => {
+  assert.match(MAIN_JS, /ipcMain\.on\('service:page-meta'/)
+  assert.match(MAIN_JS, /function serviceKeyForWebContents\(webContents\)/)
+  assert.match(MAIN_JS, /const serviceKey = serviceKeyForWebContents\(event\.sender\)/)
+  assert.match(MAIN_JS, /meta\.serviceKey !== serviceKey/)
+  assert.match(MAIN_JS, /handleMicrosoftNavigation\(service, meta\.href\)/)
+})
+
+test('tray dropdown status sums unread across every mail service', () => {
+  const statusBlock = MENU_JS.match(/function renderStatus\(mailService\) \{([\s\S]*?)\n\}/)
+  assert.ok(statusBlock, 'renderStatus missing')
+  assert.match(statusBlock[1], /reduce\(\(total, service\) => total \+ \(Number\(service\.unreadCount\) \|\| 0\), 0\)/)
+  const renderBlock = MENU_JS.match(/function render\(snapshot\) \{([\s\S]*?)\n\}/)
+  assert.ok(renderBlock, 'render missing')
+  assert.match(renderBlock[1], /snapshot\.services\.filter\(\(service\) => service\.feed && service\.feed\.kind === 'mail'\)/)
+  assert.doesNotMatch(renderBlock[1], /snapshot\.services\.find\(\(service\) => service\.feed && service\.feed\.kind === 'mail'\)/)
+})
+
+test('home and external-open commands tolerate missing active service state', () => {
+  assert.match(MAIN_JS, /function activeServiceHref\(\)/)
+  assert.match(MAIN_JS, /safeLoadURL\(webContents, service\.home \|\| service\.url\)/)
+  assert.match(MAIN_JS, /openExternalSafe\(activeServiceHref\(\)\)/)
+  assert.doesNotMatch(MAIN_JS, /openExternalSafe\(serviceState\[activeServiceKey\]\.href\)/)
+})
+
+test('build wrapper does not invoke macOS GUI tooling unless explicitly requested', () => {
+  assert.match(BUILD_SH, /MAILSTUDIO_OPEN_DIST/)
+  assert.match(BUILD_SH, /\$\{MAILSTUDIO_OPEN_DIST:-\}/)
+  assert.doesNotMatch(BUILD_SH, /if \[\[ "\$\(uname\)" == "Darwin" \]\]; then\n\s*open dist\//)
+})
+
+test('development docs match release workflow platform split', () => {
+  assert.match(DEV_DOCS, /builds the Windows and Linux\s+artifacts/)
+  assert.match(DEV_DOCS, /Build the macOS artifact locally with `npm run dist:mac`/)
+  assert.doesNotMatch(DEV_DOCS, /builds the macOS, Windows, and\s+Linux artifacts/)
+})
+
+test('manual update-check failures always surface user-visible feedback', () => {
+  assert.match(UPDATER_JS, /function showManualCheckFailed\(err\)/)
+  assert.match(UPDATER_JS, /autoUpdater\.on\('error'[\s\S]*showManualCheckFailed\(err\)/)
+  assert.match(UPDATER_JS, /checkForUpdates\(\)\?\.catch\(\(e\) => \{[\s\S]*if \(manual\) showManualCheckFailed\(e\)/)
+  assert.match(UPDATER_JS, /catch \(err\) \{[\s\S]*if \(manual\) showManualCheckFailed\(err\)/)
+})
+
+test('Teams meetings can request camera and microphone without broadening device permissions', () => {
+  assert.match(MAIN_JS, /function isTeamsHost\(host\)/)
+  assert.match(MAIN_JS, /if \(permission === 'media'\) \{[\s\S]*return isTeamsHost\(new URL\(url\)\.hostname\)/)
+  assert.doesNotMatch(MAIN_JS, /ALLOWED_PERMISSIONS = new Set\(\[[^\]]*'media'/)
+  assert.doesNotMatch(MAIN_JS, /permission === 'display-capture'[\s\S]*return true/)
+  const extendInfo = PACKAGE_JSON.build.mac.extendInfo
+  assert.match(extendInfo.NSCameraUsageDescription, /Teams meeting or call/)
+  assert.match(extendInfo.NSMicrophoneUsageDescription, /Teams meeting or call/)
+  assert.match(SECURITY_DOCS, /camera\/microphone media only for\s+Teams meetings\/calls/)
+  assert.match(SECURITY_DOCS, /screen capture, USB, etc\. are denied/)
 })

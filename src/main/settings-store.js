@@ -178,6 +178,8 @@ const DEFAULTS = {
   services: DEFAULT_SERVICES
 }
 
+const VALID_MANAGED_FEEDS = new Set(['mail'])
+
 function filePath() {
   return path.join(app.getPath('userData'), 'mailstudio-settings.json')
 }
@@ -231,7 +233,7 @@ function sanitizeService(input, builtinDefaults) {
     builtin: Boolean(builtin),
     visible: input.visible !== false,
     ...(builtin && builtin.feed ? { feed: builtin.feed } : {}),
-    ...(typeof input.feed === 'string' && input.feed ? { feed: input.feed } : {}),
+    ...(!builtin && input.mailboxManaged && VALID_MANAGED_FEEDS.has(input.feed) ? { feed: input.feed } : {}),
     ...(input.mailboxManaged ? { mailboxManaged: true } : {})
   }
 }

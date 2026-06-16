@@ -768,7 +768,7 @@ function renderSummary(snapshot) {
     if (service.feed.kind === 'mail') {
       // Unread emails received today: scraped rows carry a `today` flag, API
       // rows the Graph receivedDateTime.
-      mail = (service.feed.items || []).filter(
+      mail += (service.feed.items || []).filter(
         (item) => item.today === true || (item.receivedIso && new Date(item.receivedIso).toDateString() === todayStr)
       ).length
     } else if (service.feed.kind === 'calendar') events = (service.feed.items || []).length
@@ -1266,30 +1266,34 @@ function renderPalette() {
 
 function openCommandPalette() {
   if (!commandPalette) return
+  const wasHidden = commandPalette.hidden
   commandPalette.hidden = false
-  window.panelApi.sendCommand({ type: 'open-transient-overlay' })
+  if (wasHidden) window.panelApi.sendCommand({ type: 'open-transient-overlay' })
   commandInput.value = ''
   renderPalette()
   commandInput.focus()
 }
 
 function closeCommandPalette() {
+  const wasOpen = commandPalette && !commandPalette.hidden
   if (commandPalette) commandPalette.hidden = true
-  if (!shortcutGuide || shortcutGuide.hidden) {
+  if (wasOpen && (!shortcutGuide || shortcutGuide.hidden)) {
     window.panelApi.sendCommand({ type: 'close-transient-overlay' })
   }
 }
 
 function openShortcutGuide() {
   if (!shortcutGuide || !shortcutGrid) return
+  const wasHidden = shortcutGuide.hidden
   shortcutGrid.innerHTML = SHORTCUTS.map(([name, key]) => `<div><strong>${escapeHtml(name)}</strong><kbd>${escapeHtml(key)}</kbd></div>`).join('')
   shortcutGuide.hidden = false
-  window.panelApi.sendCommand({ type: 'open-transient-overlay' })
+  if (wasHidden) window.panelApi.sendCommand({ type: 'open-transient-overlay' })
 }
 
 function closeShortcutGuide() {
+  const wasOpen = shortcutGuide && !shortcutGuide.hidden
   if (shortcutGuide) shortcutGuide.hidden = true
-  if (!commandPalette || commandPalette.hidden) {
+  if (wasOpen && (!commandPalette || commandPalette.hidden)) {
     window.panelApi.sendCommand({ type: 'close-transient-overlay' })
   }
 }

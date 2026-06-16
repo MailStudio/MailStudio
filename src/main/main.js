@@ -386,9 +386,16 @@ function isSnoozableService(serviceKey) {
 // call audio too — acceptable while snoozed.
 function applyServiceMute(serviceKey) {
   const view = serviceViews.get(serviceKey)
-  if (view && !view.webContents.isDestroyed()) {
-    view.webContents.setAudioMuted(isSnoozed(serviceKey))
+  if (!view?.webContents || view.webContents.isDestroyed()) {
+    // Stale map entry — webContents was destroyed (hibernation/reap) but the key
+    // lingered; drop it so refreshFeeds and ensureServiceView don't crash.
+    if (view) {
+      serviceViews.delete(serviceKey)
+      loadedServiceKeys.delete(serviceKey)
+    }
+    return
   }
+  view.webContents.setAudioMuted(isSnoozed(serviceKey))
 }
 
 // Single entry point for changing a service's snooze: updates the map, mutes the
@@ -506,6 +513,16 @@ function isMicrosoftService(service) {
 
 function isMicrosoftAppHost(host) {
   return isTrustedDomain(host) && host !== 'app.asana.com' && !host.endsWith('.asana.com') && !isMicrosoftLoginHost(host)
+}
+
+function isTeamsHost(host) {
+  return (
+    host === 'teams.microsoft.com' ||
+    host.endsWith('.teams.microsoft.com') ||
+    host === 'teams.live.com' ||
+    host === 'teams.cloud.microsoft' ||
+    host.endsWith('.teams.cloud.microsoft')
+  )
 }
 
 // Once one Microsoft tab is authenticated, eagerly load the other VISIBLE
@@ -1033,7 +1050,7 @@ function goHome() {
   const webContents = serviceViews.get(activeServiceKey)?.webContents
   if (service && webContents) {
     loadedServiceKeys.add(activeServiceKey)
-    webContents.loadURL(service.home || service.url)
+    safeLoadURL(webContents, service.home || service.url)
   }
 }
 
@@ -1153,13 +1170,7 @@ function coreServiceForUrl(urlString) {
     return find('todo')
   }
   if (host === 'app.asana.com' || host.endsWith('.asana.com')) return find('asana')
-  if (
-    host === 'teams.microsoft.com' ||
-    host.endsWith('.teams.microsoft.com') ||
-    host === 'teams.live.com' ||
-    host === 'teams.cloud.microsoft' ||
-    host.endsWith('.teams.cloud.microsoft')
-  ) {
+  if (isTeamsHost(host)) {
     return find('teams')
   }
   if (
@@ -1429,19 +1440,31 @@ function configurePartition(partitionName) {
   // Allowlist-check first: only pages on trusted domains may request anything.
   // Then restrict by permission type — Microsoft services legitimately need
   // notifications (meeting alerts) and clipboard write (copy-to-clipboard
-  // buttons). Everything else — geolocation, camera, microphone, USB, etc. —
-  // is denied regardless of origin. This limits the blast radius if a
-  // Microsoft service page is ever exploited.
+  // buttons), while Teams needs camera/microphone media for meetings. Everything
+  // else — geolocation, screen capture, USB, etc. — is denied regardless of
+  // origin. This limits the blast radius if a Microsoft service page is ever
+  // exploited.
   const ALLOWED_PERMISSIONS = new Set(['notifications', 'clipboard-sanitized-write'])
 
+  const permissionAllowed = (permission, url) => {
+    if (!isAllowedHost(url)) return false
+    if (ALLOWED_PERMISSIONS.has(permission)) return true
+    if (permission === 'media') {
+      try {
+        return isTeamsHost(new URL(url).hostname)
+      } catch {
+        return false
+      }
+    }
+    return false
+  }
+
   partitionSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin) => {
-    if (!isAllowedHost(requestingOrigin)) return false
-    return ALLOWED_PERMISSIONS.has(permission)
+    return permissionAllowed(permission, requestingOrigin)
   })
 
   partitionSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
-    const trusted = isAllowedHost(details.requestingUrl)
-    const allowed = trusted && ALLOWED_PERMISSIONS.has(permission)
+    const allowed = permissionAllowed(permission, details.requestingUrl)
     if (!allowed) {
       console.warn(`[permission] denied ${permission} for ${details.requestingUrl}`)
     }
@@ -2536,7 +2559,8 @@ function refreshFeed(key) {
     .then((result) => {
       // Drop scrape results that resolve after the provider connected (or the
       // feed was otherwise reset) — the API owns the feed from that moment.
-      if ((feed.gen || 0) !== gen || connections.feedIsLive(feed.kind)) return
+      if ((feed.gen || 0) !== gen) return
+      if (connections.feedIsLive(feed.kind) && !(feed.kind === 'mail' && service && service.mailboxManaged)) return
       if (result && Array.isArray(result.items)) {
         // Cache rule lives in applyFeedResult: good data always wins, an
         // empty/error result is only trusted when this tab is ACTIVE, and an
@@ -2660,7 +2684,7 @@ function buildTrayContextMenu() {
     })),
     { type: 'separator' },
     { label: 'Reload Active View', click: () => navigate('reload') },
-    { label: 'Open Active in Browser', click: () => openExternalSafe(serviceState[activeServiceKey].href) },
+    { label: 'Open Active in Browser', click: () => openExternalSafe(activeServiceHref()) },
     { type: 'separator' },
     { label: unread > 0 ? `${unread} unread` : 'Inbox caught up', enabled: false },
     { label: 'Report an Issue…', click: () => openExternalSafe(`${REPO_URL}/issues/new?template=bug_report.yml`) },
@@ -2935,6 +2959,18 @@ function pushSnapshot() {
   }
 }
 
+function serviceKeyForWebContents(webContents) {
+  for (const [key, view] of serviceViews) {
+    if (view && view.webContents === webContents) return key
+  }
+  return null
+}
+
+function activeServiceHref() {
+  const service = findService(activeServiceKey)
+  return (serviceState[activeServiceKey] || {}).href || (service && service.url) || ''
+}
+
 /* ---------- Settings application ---------- */
 function applySettings(next) {
   settings = store.save(next)
@@ -3144,6 +3180,36 @@ function registerIpc() {
     // Only serve the snapshot to known local windows.
     if (event.sender !== panelWindow?.webContents && event.sender !== menuWindow?.webContents) return null
     return getSnapshot()
+  })
+
+  ipcMain.on('service:page-meta', (event, meta) => {
+    const serviceKey = serviceKeyForWebContents(event.sender)
+    if (!serviceKey || !meta || meta.serviceKey !== serviceKey) return
+    const service = findService(serviceKey)
+    const state = serviceState[serviceKey]
+    if (!service || !state) return
+
+    const prevCount = state.unreadCount || 0
+    if (typeof meta.title === 'string') {
+      state.title = meta.title || service.label
+      const titleCount = parseUnreadCount(state.title)
+      const feedOwnsCount =
+        (serviceKey === 'mail' && connections.feedIsLive('mail')) || serviceKey === 'asana'
+      if (!feedOwnsCount) {
+        state.unreadCount = titleCount
+      }
+      if (serviceFeeds[serviceKey]?.kind === 'mail' && titleCount > prevCount) {
+        setTimeout(() => refreshFeed(serviceKey), 1500)
+      }
+      if (serviceKey === 'teams' && state.unreadCount !== prevCount) {
+        maybeNotifyTeams(state.unreadCount)
+      }
+    }
+    if (typeof meta.href === 'string' && isAllowedHost(meta.href)) {
+      state.href = meta.href
+      handleMicrosoftNavigation(service, meta.href)
+    }
+    pushSnapshot()
   })
 
   ipcMain.on('panel:command', (event, command) => {
@@ -3387,7 +3453,7 @@ function registerIpc() {
         break
       }
       case 'open-external':
-        openExternalSafe(serviceState[activeServiceKey].href)
+        openExternalSafe(activeServiceHref())
         hideMenuWindow()
         break
       case 'open-url':

@@ -108,3 +108,36 @@ test('a pinned site with no URL is rejected', () => {
   const settings = store.normalize({ services: [{ key: 'bad' }] })
   assert.ok(!settings.services.some((s) => s.key === 'bad'))
 })
+
+test('saved service feed kinds are constrained to known feed providers', () => {
+  const settings = store.normalize({
+    services: [
+      { key: 'mail', url: 'https://evil.example', feed: 'asana' },
+      { key: 'docs', label: 'Docs', url: 'https://example.com/wiki', feed: 'javascript:alert(1)' },
+      { key: 'fake-mail', label: 'Fake Mail', url: 'https://example.com/mail', feed: 'mail' },
+      { key: 'shared', label: 'Shared', url: 'https://outlook.office.com/mail/shared/', feed: 'mail' }
+    ]
+  })
+
+  assert.equal(settings.services.find((s) => s.key === 'mail').feed, 'mail')
+  assert.equal('feed' in settings.services.find((s) => s.key === 'docs'), false)
+  assert.equal('feed' in settings.services.find((s) => s.key === 'fake-mail'), false)
+  assert.equal('feed' in settings.services.find((s) => s.key === 'shared'), false)
+})
+
+test('managed shared mailbox services may keep their mail feed', () => {
+  const settings = store.normalize({
+    services: [
+      {
+        key: 'shared',
+        label: 'Shared',
+        url: 'https://outlook.office.com/mail/shared/',
+        feed: 'mail',
+        mailboxManaged: true
+      }
+    ]
+  })
+
+  assert.equal(settings.services.find((s) => s.key === 'shared').feed, 'mail')
+  assert.equal(settings.services.find((s) => s.key === 'shared').mailboxManaged, true)
+})

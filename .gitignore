@@ -11,3 +11,6 @@ release
 npm-debug.log*
 .env
 .env.local
+
+# Generated local browser behavior harness
+tooling/qa/panel-browser-harness.generated.html

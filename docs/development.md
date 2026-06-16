@@ -12,8 +12,9 @@ npm run dist       # build for the current platform (mac / win / linux)
 ```
 
 There's also a convenience wrapper, `./build.sh` (`--dir` for a fast unpackaged
-build, `--win` / `--all` for other targets), which syntax-checks first and opens
-the `dist/` folder when done.
+build, `--win` / `--all` for other targets), which syntax-checks first. Set
+`MAILSTUDIO_OPEN_DIST=1` if you want it to open the `dist/` folder when done on
+macOS.
 
 Continuous integration runs `npm run check` and `npm test` on every push and pull
 request via [`.github/workflows/ci.yml`](../.github/workflows/ci.yml).
@@ -41,9 +42,10 @@ There's also a **Check for Updates…** item in the app menu.
 To publish the next update:
 
 1. Bump `version` in `package.json` and push a matching tag (e.g. `v1.0.1`).
-   [`release.yml`](../.github/workflows/release.yml) builds the macOS, Windows, and
-   Linux artifacts plus update metadata (`latest*.yml`) and uploads them to a draft
-   GitHub Release.
+   [`release.yml`](../.github/workflows/release.yml) builds the Windows and Linux
+   artifacts plus update metadata (`latest*.yml`) and uploads them to a draft
+   GitHub Release. Build the macOS artifact locally with `npm run dist:mac` and
+   upload it to the same draft release.
 2. Publish the release. Installed apps pick it up on their next check.
 
 (Manual alternative: `npm run release` with a `GH_TOKEN` that can create releases —

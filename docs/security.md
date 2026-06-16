@@ -57,8 +57,9 @@ for the session only and discarded on quit. The token file is written owner-only
   `mailto:` may open externally
 - A **native confirmation** before any cross-app link is loaded into the
   authenticated Teams session
-- Web-view permission requests restricted to a small allowlist (notifications,
-  clipboard write); geolocation, camera, mic, USB, etc. are denied
+- Web-view permission requests restricted to a small allowlist: notifications and
+  clipboard write on trusted app hosts, plus camera/microphone media only for
+  Teams meetings/calls. Geolocation, screen capture, USB, etc. are denied
 - Auth popups (Microsoft login/MFA) are only permitted from Microsoft service tabs,
   never from custom pins
 - Panel and menu renderer windows hardened against navigation and `window.open`;

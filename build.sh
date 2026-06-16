@@ -34,7 +34,8 @@ echo ""
 ls -lh dist/*.dmg dist/*.zip dist/*.exe dist/*.AppImage 2>/dev/null || ls -lh dist/
 echo ""
 
-# Open dist/ in Finder so you can grab the file immediately
-if [[ "$(uname)" == "Darwin" ]]; then
+# Keep the wrapper automation-friendly by default. Set MAILSTUDIO_OPEN_DIST=1
+# for the old convenience behavior of opening the output folder on macOS.
+if [[ "${MAILSTUDIO_OPEN_DIST:-}" == "1" && "$(uname)" == "Darwin" ]]; then
   open dist/
 fi

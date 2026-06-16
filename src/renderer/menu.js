@@ -30,15 +30,17 @@ function syncHeight() {
 }
 
 function renderStatus(mailService) {
-  const feed = mailService ? mailService.feed : null
+  const mailServices = Array.isArray(mailService) ? mailService : (mailService ? [mailService] : [])
+  const feedStates = mailServices.map((service) => service.feed && service.feed.state).filter(Boolean)
+  const feed = mailServices.find((service) => service.feed)?.feed || null
   const state = feed ? feed.state : null
-  const mailUnread = mailService ? mailService.unreadCount : 0
+  const mailUnread = mailServices.reduce((total, service) => total + (Number(service.unreadCount) || 0), 0)
   if (mailUnread > 0) {
     statusIcon.className = 'm-status-icon unread'
     statusIcon.innerHTML = MAIL_GLYPH
     statusNum.textContent = mailUnread > 100 ? '100+' : mailUnread
     statusText.textContent = mailUnread === 1 ? 'unread email' : 'unread emails'
-  } else if (state === 'login' || state === 'auth') {
+  } else if (feedStates.includes('login') || feedStates.includes('auth') || state === 'login' || state === 'auth') {
     // Signed out — "Inbox zero" here would be a false all-clear.
     statusIcon.className = 'm-status-icon'
     statusIcon.innerHTML = MAIL_GLYPH
@@ -93,8 +95,8 @@ function render(snapshot) {
   document.documentElement.setAttribute('data-theme', snapshot.theme === 'light' ? 'light' : 'dark')
   document.documentElement.toggleAttribute('data-glass', Boolean(snapshot.glassMode))
 
-  const mail = snapshot.services.find((service) => service.feed && service.feed.kind === 'mail')
-  renderStatus(mail || null)
+  const mail = snapshot.services.filter((service) => service.feed && service.feed.kind === 'mail')
+  renderStatus(mail)
   renderServices(snapshot)
   syncHeight()
 }

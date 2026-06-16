@@ -951,7 +951,7 @@ body.settings-open #open-settings {
 }
 
 .set-mini-btn:hover {
-  background: var(--active);
+  background: var(--selected);
 }
 
 .set-mini-btn.danger {

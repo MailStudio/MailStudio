@@ -49,6 +49,19 @@ function openReleasesPage() {
   shell.openExternal(RELEASES_URL).catch(log)
 }
 
+function showManualCheckFailed(err) {
+  manualCheckPending = false
+  dialog
+    .showMessageBox({
+      type: 'warning',
+      buttons: ['OK'],
+      title: 'Update Check Failed',
+      message: 'Could not check for updates.',
+      detail: (err && err.message) || String(err)
+    })
+    .catch(() => {})
+}
+
 // macOS: a newer version exists. Offer to open the download page rather than
 // attempting a Squirrel.Mac install that an unsigned build can't complete.
 function promptManualUpdate(info) {
@@ -100,16 +113,7 @@ function init({ app } = {}) {
 
   autoUpdater.on('error', (err) => {
     if (manualCheckPending) {
-      manualCheckPending = false
-      dialog
-        .showMessageBox({
-          type: 'warning',
-          buttons: ['OK'],
-          title: 'Update Check Failed',
-          message: 'Could not check for updates.',
-          detail: (err && err.message) || String(err)
-        })
-        .catch(() => {})
+      showManualCheckFailed(err)
     }
     log(err)
   })
@@ -157,11 +161,11 @@ function check({ manual = false } = {}) {
   if (manual) manualCheckPending = true
   try {
     autoUpdater.checkForUpdates()?.catch((e) => {
-      if (manual) manualCheckPending = false
+      if (manual) showManualCheckFailed(e)
       log(e)
     })
   } catch (err) {
-    if (manual) manualCheckPending = false
+    if (manual) showManualCheckFailed(err)
     log(err)
   }
 }
