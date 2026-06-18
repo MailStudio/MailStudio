@@ -127,6 +127,11 @@
               <span class="set-nav-text"><strong>Notifications</strong><small>Per-service alerts</small></span>
               <span class="set-nav-ch"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
             </button>
+            <button class="set-nav-row" id="teams-presence-open" type="button">
+              <span class="set-nav-ic"><svg viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.6 19a5.4 5.4 0 0 1 10.8 0"/><circle cx="17.6" cy="9.5" r="2.3"/><path d="M16.2 19a4.4 4.4 0 0 1 5-4.4"/></svg></span>
+              <span class="set-nav-text"><strong>Teams status</strong><small>Availability, duration &amp; reset</small></span>
+              <span class="set-nav-ch"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
+            </button>
             <button class="set-nav-row" data-goto="tasks">
               <span class="set-nav-ic"><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6.2l1.1 1.1L7 5.4M4 17.2l1.1 1.1L7 16.4"/></svg></span>
               <span class="set-nav-text"><strong>Tasks</strong><small>Where “New task” creates tasks</small></span>
@@ -395,10 +400,20 @@
     <canvas id="burst-canvas" class="burst-canvas"></canvas>
 
     <!-- Sidebar resize: drag this to adjust sidebar width -->
-    <div class="sidebar-resize-handle" id="sidebar-resize-handle" aria-hidden="true"></div>
+    <div
+      class="sidebar-resize-handle"
+      id="sidebar-resize-handle"
+      role="separator"
+      tabindex="0"
+      aria-orientation="vertical"
+      aria-label="Resize sidebar"
+      aria-valuemin="180"
+      aria-valuemax="480"
+      aria-valuenow="280"
+    ></div>
 
     <!-- Split view: draggable divider sits in the gutter between the two panes -->
-    <div class="split-divider" id="split-divider" hidden><span class="split-grip"></span></div>
+    <div class="split-divider" id="split-divider" role="separator" tabindex="0" aria-label="Resize split panes" hidden><span class="split-grip"></span></div>
     <!-- Live preview shown while dragging the divider (real web views are detached) -->
     <div class="split-ghost" id="split-ghost" hidden>
       <div class="split-ghost-pane" id="split-ghost-a"></div>
@@ -417,6 +432,54 @@
       </div>
       <div class="dl-list" id="dl-list"></div>
       <div class="dl-empty" id="dl-empty">No downloads yet</div>
+    </div>
+
+    <div class="teams-presence-popover" id="teams-presence-popover" role="dialog" aria-labelledby="teams-presence-title" hidden>
+      <div class="teams-presence-head">
+        <span id="teams-presence-title">Teams status</span>
+        <button class="teams-presence-close" id="teams-presence-close" type="button" aria-label="Close Teams status controls">
+          <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="teams-presence-list" role="listbox" aria-label="Teams availability">
+        <button class="presence-row" data-teams-presence="available" type="button">
+          <span class="presence-mark available"><svg viewBox="0 0 24 24"><path d="M7 12l3 3 7-7"/></svg></span><span>Available</span>
+        </button>
+        <button class="presence-row" data-teams-presence="busy" type="button">
+          <span class="presence-mark busy"></span><span>Busy</span>
+        </button>
+        <button class="presence-row" data-teams-presence="dnd" type="button">
+          <span class="presence-mark dnd"><svg viewBox="0 0 24 24"><path d="M7 12h10"/></svg></span><span>Do not disturb</span>
+        </button>
+        <button class="presence-row" data-teams-presence="brb" type="button">
+          <span class="presence-mark brb"><svg viewBox="0 0 24 24"><path d="M12 6v6l4 2"/></svg></span><span>Be right back</span>
+        </button>
+        <button class="presence-row" data-teams-presence="away" type="button">
+          <span class="presence-mark away"><svg viewBox="0 0 24 24"><path d="M12 6v6l4 2"/></svg></span><span>Appear away</span>
+        </button>
+        <button class="presence-row" data-teams-presence="offline" type="button">
+          <span class="presence-mark offline"><svg viewBox="0 0 24 24"><path d="M8 8l8 8M16 8l-8 8"/></svg></span><span>Appear offline</span>
+        </button>
+      </div>
+      <div class="presence-sep"></div>
+      <button class="presence-row duration-row" id="teams-duration-toggle" type="button" aria-expanded="false">
+        <span class="presence-mark duration"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg></span>
+        <span>Duration</span>
+        <small id="teams-duration-label">Default</small>
+        <svg class="presence-chevron" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
+      </button>
+      <div class="duration-options" id="teams-duration-options" hidden>
+        <button data-teams-duration="default" type="button">Default</button>
+        <button data-teams-duration="30m" type="button">30 min</button>
+        <button data-teams-duration="1h" type="button">1 hour</button>
+        <button data-teams-duration="4h" type="button">4 hours</button>
+        <button data-teams-duration="8h" type="button">8 hours</button>
+      </div>
+      <div class="presence-sep"></div>
+      <button class="presence-row reset-row" id="teams-presence-reset" type="button">
+        <span class="presence-mark reset"><svg viewBox="0 0 24 24"><path d="M3 12a8 8 0 1 0 2.3-5.7M3 4v6h6"/></svg></span><span>Reset status</span>
+      </button>
+      <div class="teams-presence-feedback" id="teams-presence-feedback" role="status" aria-live="polite" hidden></div>
     </div>
 
     <div class="overlay-panel" id="command-palette" hidden>

@@ -25,6 +25,10 @@ jobs:
           node-version: '20'
           cache: npm
       - run: npm ci
+      - name: Syntax check
+        run: npm run check
+      - name: Unit tests
+        run: npm test
       - name: Build and publish
         run: npx electron-builder --publish always
         env:

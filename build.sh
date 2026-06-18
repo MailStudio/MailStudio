@@ -13,11 +13,22 @@ cd "$(dirname "$0")"
 MODE="${1:-}"
 START=$(date +%s)
 
+echo "→ Installing dependencies…"
+if [[ -f package-lock.json ]]; then
+  npm ci --prefer-offline
+else
+  npm install --prefer-offline
+fi
+
 echo "→ Checking syntax…"
 npm run check
 
-echo "→ Installing dependencies…"
-npm install --prefer-offline 2>/dev/null || npm install
+if [[ "${MAILSTUDIO_SKIP_TESTS:-}" == "1" ]]; then
+  echo "→ Skipping tests (MAILSTUDIO_SKIP_TESTS=1)…"
+else
+  echo "→ Running tests…"
+  npm test
+fi
 
 echo "→ Building…"
 case "$MODE" in

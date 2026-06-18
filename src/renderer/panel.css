@@ -536,7 +536,7 @@ body.collapsed.mode-vanish:not(.settings-open) .sidebar {
   font-size: 11px;
   font-weight: 650;
   color: var(--err);
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
 }
 
 .feed-event-cancelled .feed-event-title {
@@ -611,6 +611,19 @@ body.collapsed.mode-rail:not(.settings-open) .service {
 body.collapsed.mode-rail:not(.settings-open) .service-home {
   width: 100%;
   height: 40px;
+}
+
+body.collapsed.mode-rail:not(.settings-open) .service-home.active {
+  background: var(--selected);
+  color: var(--text);
+}
+
+body.collapsed.mode-rail:not(.settings-open) .service-home.in-split {
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+body.collapsed.mode-rail:not(.settings-open) .service-home.in-split.split-focus {
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 body.collapsed.mode-rail:not(.settings-open) .service-row .service,
@@ -711,7 +724,7 @@ body.settings-open #open-settings {
 .set-head-title {
   font-size: 16px;
   font-weight: 750;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .set-done {
@@ -738,7 +751,7 @@ body.settings-open #open-settings {
 .set-title {
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--muted-dim);
 }
@@ -1107,7 +1120,7 @@ body.settings-open #open-settings {
 .compose-label {
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--muted-dim);
   padding: 0 2px;
@@ -1310,7 +1323,7 @@ body.settings-open .compose-label {
 .tools-tab-label {
   flex: 0 0 auto;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
 }
 
 .tools-tab .tools-tab-chevron {
@@ -1484,7 +1497,7 @@ body.settings-open .compose-label {
   font-size: 10px;
   font-weight: 600;
   color: var(--muted-dim);
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
 }
 
 .focus-btn {
@@ -1647,8 +1660,14 @@ body.settings-open .tools-drawer {
 }
 
 .sidebar-resize-handle:hover::after,
-body.sb-resizing .sidebar-resize-handle::after {
+body.sb-resizing .sidebar-resize-handle::after,
+.sidebar-resize-handle:focus-visible::after {
   background: var(--accent);
+}
+
+.sidebar-resize-handle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 /* Hide the handle when the sidebar is collapsed (no edge to grab). */
@@ -1728,7 +1747,7 @@ body.first-boot .sidebar {
 .welcome-title {
   font-size: 22px;
   font-weight: 760;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   margin: 0 0 10px;
 }
 
@@ -1993,7 +2012,7 @@ body.first-boot .sidebar {
 .onboard-title {
   font-size: 19px;
   font-weight: 740;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   margin: 0 0 8px;
 }
 .onboard-sub {
@@ -2249,6 +2268,10 @@ body.collapsed.mode-rail:not(.settings-open) .notif-setup-main { justify-content
   transition: background 0.14s var(--ease);
 }
 .set-nav-row:hover { background: var(--hover); }
+.set-nav-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .set-nav-ic {
   flex: 0 0 auto;
   width: 30px;
@@ -2271,7 +2294,7 @@ body.collapsed.mode-rail:not(.settings-open) .notif-setup-main { justify-content
   margin: 22px 0 9px;
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--muted-dim);
 }
@@ -2332,6 +2355,205 @@ body.collapsed.mode-rail:not(.settings-open) .notif-setup-main { justify-content
 }
 .set-notif-warn button:hover { background: var(--hover); }
 
+/* ============ Teams presence popover ============ */
+.teams-presence-popover {
+  position: fixed;
+  top: calc(var(--topbar) + 18px);
+  left: calc(var(--sb-expanded) + 10px);
+  width: min(380px, calc(100vw - var(--sb-expanded) - 22px));
+  max-height: calc(100vh - var(--topbar) - 36px);
+  overflow: auto;
+  z-index: 220;
+  padding: 10px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #292929;
+  color: #ececec;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+}
+.teams-presence-popover[hidden] { display: none; }
+.teams-presence-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px 8px 20px;
+  color: #f3f3f3;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.teams-presence-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #bdbdbd;
+  cursor: pointer;
+}
+.teams-presence-close:hover,
+.teams-presence-close:focus-visible {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  outline: none;
+}
+.teams-presence-close svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.teams-presence-list {
+  display: flex;
+  flex-direction: column;
+}
+.presence-row {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  width: 100%;
+  min-height: 66px;
+  padding: 0 28px 0 36px;
+  border: 0;
+  background: transparent;
+  color: #ededed;
+  font: inherit;
+  font-size: 26px;
+  line-height: 1.15;
+  text-align: left;
+  cursor: pointer;
+}
+.presence-row:hover,
+.presence-row:focus-visible,
+.presence-row.active {
+  background: rgba(255, 255, 255, 0.08);
+  outline: none;
+}
+.presence-row:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+.presence-mark {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  color: #242424;
+}
+.presence-mark svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.presence-mark.available { background: #40c94a; color: #173116; }
+.presence-mark.busy { background: #ef3e46; }
+.presence-mark.dnd { background: #ef3e46; color: #5d1116; }
+.presence-mark.brb,
+.presence-mark.away { background: #ffb900; color: #5a3d00; }
+.presence-mark.offline {
+  background: transparent;
+  border: 4px solid #969696;
+  color: #969696;
+}
+.presence-mark.duration {
+  background: transparent;
+  border: 2px solid #d8d8d8;
+  color: #d8d8d8;
+}
+.presence-mark.duration svg { stroke-width: 2; }
+.presence-mark.reset {
+  background: transparent;
+  color: #ededed;
+}
+.presence-mark.reset svg { width: 30px; height: 30px; stroke-width: 2; }
+.presence-sep {
+  height: 1px;
+  margin: 10px 0;
+  background: rgba(255, 255, 255, 0.18);
+}
+.duration-row {
+  min-height: 70px;
+}
+.duration-row small {
+  margin-left: auto;
+  color: #bdbdbd;
+  font-size: 13px;
+}
+.presence-chevron {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: #bdbdbd;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.duration-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0 18px 10px 86px;
+}
+.duration-options[hidden] { display: none; }
+.duration-options button {
+  min-height: 34px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #ededed;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.duration-options button:hover,
+.duration-options button:focus-visible,
+.duration-options button.active {
+  background: rgba(255, 255, 255, 0.14);
+  outline: none;
+}
+.teams-presence-feedback {
+  margin: 4px 18px 2px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #dfdfdf;
+  font-size: 12px;
+  line-height: 1.35;
+}
+.teams-presence-feedback.error {
+  background: rgba(239, 62, 70, 0.16);
+  color: #ffc9cc;
+}
+
+@media (max-width: 760px) {
+  .teams-presence-popover {
+    left: 10px;
+    right: 10px;
+    width: auto;
+  }
+  .presence-row {
+    min-height: 58px;
+    padding-left: 24px;
+    font-size: 21px;
+  }
+  .duration-options {
+    padding-left: 74px;
+  }
+}
+
 /* ============ Split view: draggable divider + drag preview ============ */
 /* The handle lives in the gutter between the two panes (the one strip of the
    content area not covered by a native web view), so it's grabbable there. */
@@ -2348,7 +2570,15 @@ body.collapsed.mode-rail:not(.settings-open) .notif-setup-main { justify-content
 .split-divider[hidden] { display: none; }
 .split-divider.vertical { cursor: col-resize; }
 .split-divider.horizontal { cursor: row-resize; }
-.split-divider:hover { background: color-mix(in srgb, var(--accent) 55%, transparent); }
+.split-divider:hover,
+.split-divider:focus-visible {
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.split-divider:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 
 .split-grip {
   background: var(--muted-dim);
@@ -2356,7 +2586,8 @@ body.collapsed.mode-rail:not(.settings-open) .notif-setup-main { justify-content
 }
 .split-divider.vertical .split-grip { width: 2px; height: 26px; }
 .split-divider.horizontal .split-grip { width: 26px; height: 2px; }
-.split-divider:hover .split-grip { background: var(--accent); }
+.split-divider:hover .split-grip,
+.split-divider:focus-visible .split-grip { background: var(--accent); }
 
 /* Live preview shown while dragging (real web views are detached during drag). */
 .split-ghost {
@@ -2652,7 +2883,7 @@ kbd {
   transform: translateX(-50%);
   font-size: 7px;
   font-weight: 800;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--accent);
   white-space: nowrap;

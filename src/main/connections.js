@@ -7,7 +7,7 @@ const apiFeeds = require('./api-feeds')
 // raw tokens or the OAuth engine directly.
 //
 // Provider → the feed kinds it powers once connected:
-//   microsoft → mail, calendar
+//   microsoft → mail, calendar, Teams presence
 //   asana     → asana
 // (Teams stays on title-scrape; it has no API path here.)
 
@@ -198,19 +198,14 @@ async function loadAccount(provider, tokenSet) {
       return { name: me.name, workspaceGid: me.workspaceGid }
     }
     if (provider === 'microsoft') {
-      // /me is covered by User.Read; reuse the Graph helper inline.
-      const res = await fetch('https://graph.microsoft.com/v1.0/me?$select=displayName,userPrincipalName', {
-        headers: { Authorization: `Bearer ${tokenSet.accessToken}`, Accept: 'application/json' },
-        signal: AbortSignal.timeout(15000)
-      })
-      if (res.ok) {
-        const json = await res.json()
+      const json = await apiFeeds.fetchMicrosoftMe(tokenSet.accessToken)
+      if (json) {
         // userPrincipalName is the signed-in mailbox address. We keep it so the
         // mailbox-discovery scrape can tell the primary account apart from the
         // shared mailboxes it sits beside in the OWA folder tree (otherwise the
         // primary's own email-labeled root gets re-added as a duplicate tab).
         const email = typeof json.userPrincipalName === 'string' ? json.userPrincipalName.trim().toLowerCase() : ''
-        return { name: json.displayName || json.userPrincipalName || 'Microsoft', email: email || null }
+        return { id: json.id || null, name: json.displayName || json.userPrincipalName || 'Microsoft', email: email || null }
       }
     }
   } catch {
@@ -384,6 +379,28 @@ async function withToken(provider, fn) {
   }
 }
 
+async function withTokenForUserAction(provider, fn) {
+  let accessToken = await getAccessToken(provider)
+  if (!accessToken) return null
+  try {
+    return await fn(accessToken)
+  } catch (err) {
+    if (err instanceof apiFeeds.AuthError) {
+      const token = secureStore.getToken(provider)
+      if (token && token.accessToken === accessToken) {
+        secureStore.setToken(provider, { ...token, expiresAt: 0 })
+      }
+      accessToken = await getAccessToken(provider)
+      if (!accessToken) return null
+      return fn(accessToken)
+    }
+    if (err instanceof apiFeeds.ThrottledError) {
+      throw new Error(`Microsoft is throttling Teams status updates. Try again in ${err.retryAfter || 60} seconds.`)
+    }
+    throw err
+  }
+}
+
 /* ---------- Feed accessors (used by main.js refreshFeed) ---------- */
 async function getMailFeed() {
   return withToken('microsoft', (t) => apiFeeds.fetchMail(t))
@@ -401,6 +418,52 @@ async function getMailUnreadCount() {
 
 async function getCalendarFeed() {
   return withToken('microsoft', (t) => apiFeeds.fetchCalendar(t))
+}
+
+async function getMicrosoftUserId() {
+  const token = secureStore.getToken('microsoft')
+  if (token && token.account && token.account.id) {
+    return token.account.id
+  }
+  const me = await withToken('microsoft', (t) => apiFeeds.fetchMicrosoftMe(t))
+  if (!me || !me.id) return null
+  const fresh = secureStore.getToken('microsoft')
+  if (fresh) {
+    const email = typeof me.userPrincipalName === 'string' ? me.userPrincipalName.trim().toLowerCase() : ''
+    const account = {
+      ...(fresh.account || {}),
+      id: me.id,
+      name: me.displayName || me.userPrincipalName || (fresh.account && fresh.account.name) || 'Microsoft',
+      email: email || (fresh.account && fresh.account.email) || null
+    }
+    secureStore.setToken('microsoft', { ...fresh, account })
+    setStatus('microsoft', state.microsoft.status, { account })
+  }
+  return me.id
+}
+
+async function setTeamsPreferredPresence(presence) {
+  const userId = await getMicrosoftUserId()
+  if (!userId) {
+    throw new Error('Connect Microsoft again to enable Teams status controls.')
+  }
+  const result = await withTokenForUserAction('microsoft', (t) => apiFeeds.setTeamsPreferredPresence(t, userId, presence))
+  if (result === null) {
+    throw new Error('Teams status could not be updated right now.')
+  }
+  return result
+}
+
+async function clearTeamsPreferredPresence() {
+  const userId = await getMicrosoftUserId()
+  if (!userId) {
+    throw new Error('Connect Microsoft again to enable Teams status controls.')
+  }
+  const result = await withTokenForUserAction('microsoft', (t) => apiFeeds.clearTeamsPreferredPresence(t, userId))
+  if (result === null) {
+    throw new Error('Teams status could not be reset right now.')
+  }
+  return result
 }
 
 async function getAsanaFeed() {
@@ -453,6 +516,8 @@ module.exports = {
   connect,
   disconnect,
   getAccessToken,
+  setTeamsPreferredPresence,
+  clearTeamsPreferredPresence,
   getMailUnreadCount,
   getFeed
 }

@@ -57,6 +57,41 @@ async function apiGet(url, accessToken, extraHeaders) {
   return json
 }
 
+async function apiPost(url, accessToken, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/json',
+      'Content-Type': 'application/json'
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(15000)
+  })
+  if (res.status === 401) {
+    throw new AuthError('Unauthorized')
+  }
+  if (res.status === 429 || (res.status === 503 && res.headers.get('retry-after'))) {
+    throw new ThrottledError(`Throttled (${res.status})`, parseRetryAfter(res))
+  }
+  const text = await res.text()
+  let json
+  try {
+    json = text ? JSON.parse(text) : {}
+  } catch {
+    json = {}
+  }
+  if (!res.ok) {
+    const msg = (json.error && (json.error.message || json.error)) || `Request failed (${res.status})`
+    throw new Error(typeof msg === 'string' ? msg : 'Request failed')
+  }
+  return json
+}
+
+async function fetchMicrosoftMe(accessToken) {
+  return apiGet(`${GRAPH}/me?$select=id,displayName,userPrincipalName`, accessToken)
+}
+
 /* ---------- Microsoft Graph: Mail ---------- */
 async function fetchMail(accessToken) {
   // Inbox, newest first. $select keeps the payload small.
@@ -134,6 +169,21 @@ function formatEventTime(dateTime) {
   return `${day} ${time}`
 }
 
+async function setTeamsPreferredPresence(accessToken, userId, presence) {
+  const body = {
+    availability: presence.availability,
+    activity: presence.activity
+  }
+  if (presence.expirationDuration) {
+    body.expirationDuration = presence.expirationDuration
+  }
+  return apiPost(`${GRAPH}/users/${encodeURIComponent(userId)}/presence/setUserPreferredPresence`, accessToken, body)
+}
+
+async function clearTeamsPreferredPresence(accessToken, userId) {
+  return apiPost(`${GRAPH}/users/${encodeURIComponent(userId)}/presence/clearUserPreferredPresence`, accessToken, {})
+}
+
 /* ---------- Asana ---------- */
 // Returns { gid, name, workspaceGid } for the signed-in user — workspaceGid is
 // needed to scope the task query and is cached on the stored account.
@@ -174,9 +224,12 @@ async function fetchAsanaTasks(accessToken, workspaceGid) {
 module.exports = {
   AuthError,
   ThrottledError,
+  fetchMicrosoftMe,
   fetchMail,
   fetchMailUnreadCount,
   fetchCalendar,
+  setTeamsPreferredPresence,
+  clearTeamsPreferredPresence,
   fetchAsanaMe,
   fetchAsanaTasks
 }

@@ -43,8 +43,10 @@ class CancelledError extends Error {
 const PROVIDERS = {
   microsoft: {
     label: 'Microsoft',
-    // Mail + Calendar in one grant; offline_access yields the refresh token.
-    scope: 'openid profile offline_access User.Read Mail.Read Calendars.Read',
+    // Mail + Calendar + Teams presence in one grant; offline_access yields the
+    // refresh token. Existing Microsoft grants without Presence.ReadWrite must
+    // reconnect before the Teams status controls can write presence.
+    scope: 'openid profile offline_access User.Read Mail.Read Calendars.Read Presence.ReadWrite',
     authorizePath: (tenant) =>
       `https://login.microsoftonline.com/${tenant || 'common'}/oauth2/v2.0/authorize`,
     tokenPath: (tenant) =>

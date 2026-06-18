@@ -8,6 +8,7 @@ const path = require('node:path')
 const ROOT = path.resolve(__dirname, '..', '..')
 const MAIN_JS = fs.readFileSync(path.join(ROOT, 'src', 'main', 'main.js'), 'utf8')
 const PANEL_JS = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'panel.js'), 'utf8')
+const PANEL_CSS = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'panel.css'), 'utf8')
 const PANEL_HTML = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'panel.html'), 'utf8')
 const API_FEEDS_JS = fs.readFileSync(path.join(ROOT, 'src', 'main', 'api-feeds.js'), 'utf8')
 const SETTINGS_STORE_JS = fs.readFileSync(path.join(ROOT, 'src', 'main', 'settings-store.js'), 'utf8')
@@ -18,6 +19,7 @@ const UPDATER_JS = fs.readFileSync(path.join(ROOT, 'src', 'main', 'updater.js'),
 const BUILD_SH = fs.readFileSync(path.join(ROOT, 'build.sh'), 'utf8')
 const DEV_DOCS = fs.readFileSync(path.join(ROOT, 'docs', 'development.md'), 'utf8')
 const SECURITY_DOCS = fs.readFileSync(path.join(ROOT, 'docs', 'security.md'), 'utf8')
+const RELEASE_WORKFLOW = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'release.yml'), 'utf8')
 const PACKAGE_JSON = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
 
 // settings-store requires electron's `app`.
@@ -175,6 +177,47 @@ test('feed rows are keyboard-operable buttons, not mouse-only divs', () => {
   assert.match(PANEL_JS, /event\.key === 'Enter' \|\| event\.key === ' '/)
 })
 
+test('icon-only renderer controls expose accessible labels and switch state', () => {
+  assert.match(PANEL_JS, /themeToggle\.setAttribute\('aria-label', themeToggle\.title\)/)
+  assert.match(PANEL_JS, /themeToggle\.setAttribute\('aria-pressed', theme === 'light' \? 'true' : 'false'\)/)
+  assert.match(PANEL_JS, /snoozeBtn\.setAttribute\('aria-label', snoozeBtn\.title\)/)
+  assert.match(PANEL_JS, /snoozeBtn\.setAttribute\('aria-pressed', active \? 'true' : 'false'\)/)
+  assert.match(PANEL_JS, /homeBtn\.setAttribute\('aria-label', railMode \? `Switch to \$\{service\.label\}` : `Open \$\{service\.label\} home`\)/)
+  assert.match(PANEL_JS, /collapseBtn\.setAttribute\('aria-label', feedCollapsed \? `Show \$\{service\.label\} notifications` : `Hide \$\{service\.label\} notifications`\)/)
+  assert.match(PANEL_JS, /sw\.setAttribute\('role', 'switch'\)/)
+  assert.match(PANEL_JS, /sw\.setAttribute\('aria-checked', service\.visible \? 'true' : 'false'\)/)
+  assert.match(PANEL_JS, /sw\.setAttribute\('aria-label', `\$\{service\.visible \? 'Hide' : 'Show'\} \$\{service\.label\} in sidebar`\)/)
+  assert.match(PANEL_JS, /rename\.setAttribute\('aria-label', `Rename \$\{service\.label\}`\)/)
+  assert.match(PANEL_JS, /editUrl\.setAttribute\('aria-label', `Edit \$\{service\.label\} URL`\)/)
+  assert.match(PANEL_JS, /del\.setAttribute\('aria-label', `Remove \$\{service\.label\}`\)/)
+  assert.match(PANEL_JS, /toolsTab\.setAttribute\('aria-expanded', toolsDrawer\.classList\.contains\('open'\) \? 'true' : 'false'\)/)
+  assert.match(PANEL_JS, /toolsTab\.setAttribute\('aria-controls', 'tools-drawer'\)/)
+})
+
+test('collapsed rail service icons switch tabs instead of resetting home', () => {
+  assert.match(PANEL_JS, /const railMode = Boolean\(snapshot\.sidebarCollapsed && snapshot\.collapseMode === 'rail' && !snapshot\.settingsOpen\)/)
+  assert.match(PANEL_JS, /railMode \? `Switch to \$\{service\.label\}` : `Open \$\{service\.label\} home`/)
+  assert.match(PANEL_JS, /const type = railMode && \(event\.metaKey \|\| event\.ctrlKey\) \? 'split-select' : railMode \? 'switch-service' : 'go-service-home'/)
+  assert.match(PANEL_CSS, /body\.collapsed\.mode-rail:not\(\.settings-open\) \.service-home\.active/)
+  assert.match(PANEL_CSS, /body\.collapsed\.mode-rail:not\(\.settings-open\) \.service-home\.in-split/)
+})
+
+test('resize handles are keyboard-adjustable separators', () => {
+  assert.match(PANEL_HTML, /id="sidebar-resize-handle"[\s\S]*role="separator"[\s\S]*tabindex="0"[\s\S]*aria-orientation="vertical"/)
+  assert.match(PANEL_HTML, /id="split-divider" role="separator" tabindex="0" aria-label="Resize split panes"/)
+  assert.match(PANEL_JS, /function paintSidebarWidth\(width\)/)
+  assert.match(PANEL_JS, /sbResizeHandle\.setAttribute\('aria-valuenow', String\(newWidth\)\)/)
+  assert.match(PANEL_JS, /sbResizeHandle\.addEventListener\('keydown'/)
+  assert.match(PANEL_JS, /e\.key === 'ArrowLeft'/)
+  assert.match(PANEL_JS, /e\.key === 'ArrowRight'/)
+  assert.match(PANEL_JS, /type: 'set-sidebar-width', width, save: true/)
+  assert.match(PANEL_JS, /splitDivider\.setAttribute\('aria-valuenow', String\(Math\.round\(ratio \* 100\)\)\)/)
+  assert.match(PANEL_JS, /splitDivider\.addEventListener\('keydown'/)
+  assert.match(PANEL_JS, /type: 'split-drag-end', ratio/)
+  assert.match(PANEL_CSS, /\.sidebar-resize-handle:focus-visible/)
+  assert.match(PANEL_CSS, /\.split-divider:focus-visible/)
+})
+
 test('main feed click handler resolves clicked items by stable id before row fallback', () => {
   assert.match(MAIN_JS, /function findFeedItem\(feed, command\)/)
   assert.match(MAIN_JS, /const recentItem = findFeedItem\(feed, command\)/)
@@ -293,6 +336,14 @@ test('non-secret settings export excludes OAuth connection config and secrets', 
   assert.ok(!block.includes('secureStore'))
 })
 
+test('settings export uses owner-only atomic writes', () => {
+  assert.match(MAIN_JS, /function writeOwnerOnlyFile\(target, payload\)/)
+  assert.match(MAIN_JS, /fs\.writeFileSync\(tmp, payload, \{ encoding: 'utf8', mode: 0o600 \}\)/)
+  assert.match(MAIN_JS, /fs\.renameSync\(tmp, target\)/)
+  assert.match(MAIN_JS, /fs\.chmodSync\(target, 0o600\)/)
+  assert.match(MAIN_JS, /writeOwnerOnlyFile\(filePath, JSON\.stringify\(portable, null, 2\)\)/)
+})
+
 test('imported layouts are reattached and snapshots refreshed immediately', () => {
   const importBlock = MAIN_JS.match(/function importPortableSettings\(\) \{([\s\S]*?)\n\}/)
   assert.ok(importBlock, 'importPortableSettings missing')
@@ -321,14 +372,82 @@ test('transient overlay commands are emitted only when overlay visibility change
   assert.match(commandPaletteBlock[1], /const wasHidden = commandPalette\.hidden/)
   assert.match(commandPaletteBlock[1], /if \(wasHidden\) window\.panelApi\.sendCommand\(\{ type: 'open-transient-overlay' \}\)/)
   assert.match(commandPaletteBlock[1], /const wasOpen = commandPalette && !commandPalette\.hidden/)
-  assert.match(commandPaletteBlock[1], /if \(wasOpen && \(!shortcutGuide \|\| shortcutGuide\.hidden\)\)/)
+  assert.match(commandPaletteBlock[1], /if \(wasOpen && !hasOtherTransientOverlay\('command'\)\)/)
 
   const shortcutBlock = PANEL_JS.match(/function openShortcutGuide\(\) \{([\s\S]*?)const commandPaletteBtn/)
   assert.ok(shortcutBlock, 'shortcut overlay helpers missing')
   assert.match(shortcutBlock[1], /const wasHidden = shortcutGuide\.hidden/)
   assert.match(shortcutBlock[1], /if \(wasHidden\) window\.panelApi\.sendCommand\(\{ type: 'open-transient-overlay' \}\)/)
   assert.match(shortcutBlock[1], /const wasOpen = shortcutGuide && !shortcutGuide\.hidden/)
-  assert.match(shortcutBlock[1], /if \(wasOpen && \(!commandPalette \|\| commandPalette\.hidden\)\)/)
+  assert.match(shortcutBlock[1], /if \(wasOpen && !hasOtherTransientOverlay\('shortcut'\)\)/)
+})
+
+test('downloads drawer detaches BrowserViews while visible', () => {
+  assert.match(PANEL_JS, /function setDownloadsDrawerOpen\(open\)/)
+  const block = PANEL_JS.match(/function setDownloadsDrawerOpen\(open\) \{([\s\S]*?)\n\}/)
+  assert.ok(block, 'setDownloadsDrawerOpen missing')
+  assert.match(block[1], /const wasOpen = !dlDrawer\.hidden/)
+  assert.match(block[1], /if \(open && !wasOpen\) \{[\s\S]*open-transient-overlay/)
+  assert.match(block[1], /else if \(!open && wasOpen && !hasOtherTransientOverlay\('downloads'\)\) \{[\s\S]*close-transient-overlay/)
+  assert.match(PANEL_JS, /setDownloadsDrawerOpen\(dlDrawer\.hidden\)/)
+  assert.match(PANEL_JS, /setDownloadsDrawerOpen\(true\)/)
+  assert.match(PANEL_JS, /setDownloadsDrawerOpen\(false\)/)
+  assert.doesNotMatch(PANEL_JS, /dlDrawer\.hidden = !dlDrawer\.hidden/)
+})
+
+test('Teams presence controls use Graph preferred presence from a right-side settings popover', () => {
+  assert.match(OAUTH_JS, /Presence\.ReadWrite/)
+  assert.match(API_FEEDS_JS, /presence\/setUserPreferredPresence/)
+  assert.match(API_FEEDS_JS, /presence\/clearUserPreferredPresence/)
+  assert.match(CONNECTIONS_JS, /function setTeamsPreferredPresence\(presence\)/)
+  assert.match(CONNECTIONS_JS, /function clearTeamsPreferredPresence\(\)/)
+  assert.match(MAIN_JS, /const TEAMS_PRESENCE_OPTIONS = \{[\s\S]*available:[\s\S]*busy:[\s\S]*dnd:[\s\S]*brb:[\s\S]*away:[\s\S]*offline:/)
+  assert.match(MAIN_JS, /teamsPresence: teamsPresenceState/)
+  assert.match(MAIN_JS, /case 'set-teams-presence':/)
+  assert.match(MAIN_JS, /case 'reset-teams-presence':/)
+  assert.match(PANEL_HTML, /id="teams-presence-open"/)
+  assert.match(PANEL_HTML, /id="teams-presence-popover"/)
+  assert.match(PANEL_HTML, /data-teams-presence="available"/)
+  assert.match(PANEL_HTML, /data-teams-presence="offline"/)
+  assert.match(PANEL_HTML, /data-teams-duration="4h"/)
+  assert.match(PANEL_CSS, /\.teams-presence-popover \{[\s\S]*left: calc\(var\(--sb-expanded\) \+ 10px\)/)
+  assert.match(PANEL_JS, /function setTeamsPresencePopoverOpen\(open\)/)
+  assert.match(PANEL_JS, /type: 'set-teams-presence'/)
+  assert.match(PANEL_JS, /type: 'reset-teams-presence'/)
+  assert.match(PANEL_JS, /if \(open && !wasOpen\) \{[\s\S]*open-transient-overlay/)
+  assert.match(PANEL_JS, /hasOtherTransientOverlay\('teams'\)/)
+})
+
+test('focus completion respects reduced-motion preference', () => {
+  const block = PANEL_JS.match(/function spawnBurst\(\) \{([\s\S]*?)\n\}/)
+  assert.ok(block, 'spawnBurst missing')
+  assert.match(block[1], /matchMedia\('\(prefers-reduced-motion: reduce\)'\)\.matches\) return/)
+})
+
+test('local panel and menu windows only allow their packaged file URLs', () => {
+  assert.match(MAIN_JS, /const \{ pathToFileURL \} = require\('url'\)/)
+  const block = MAIN_JS.match(/function hardenLocalWindow\(win, allowedFile\) \{([\s\S]*?)\n\}/)
+  assert.ok(block, 'hardenLocalWindow missing')
+  assert.match(block[1], /const allowedFileUrl = pathToFileURL\(allowedFile\)\.href/)
+  assert.match(block[1], /if \(url === allowedFileUrl\) return/)
+  assert.match(block[1], /event\.preventDefault\(\)/)
+  assert.match(MAIN_JS, /hardenLocalWindow\(panelWindow, panelHtml\)[\s\S]*panelWindow\.loadFile\(panelHtml\)/)
+  assert.match(MAIN_JS, /hardenLocalWindow\(menuWindow, menuHtml\)[\s\S]*menuWindow\.loadFile\(menuHtml\)/)
+})
+
+test('custom pinned hosts are allowed only for their owning service', () => {
+  assert.match(MAIN_JS, /let allowedCustomHostsByService = new Map\(\)/)
+  const buildBlock = MAIN_JS.match(/function buildAllowedHosts\(\) \{([\s\S]*?)\n\}/)
+  assert.ok(buildBlock, 'buildAllowedHosts missing')
+  assert.match(buildBlock[1], /if \(service\.builtin \|\| isMailboxService\(service\)\) continue/)
+  assert.match(buildBlock[1], /hostsByService\.set\(service\.key, hosts\)/)
+  const allowBlock = MAIN_JS.match(/function isAllowedHost\(urlString, serviceKey = null\) \{([\s\S]*?)\n\}/)
+  assert.ok(allowBlock, 'isAllowedHost missing')
+  assert.match(allowBlock[1], /const serviceHosts = serviceKey \? allowedCustomHostsByService\.get\(serviceKey\) : null/)
+  assert.match(allowBlock[1], /serviceHosts && serviceHosts\.has\(host\)/)
+  assert.match(MAIN_JS, /isAllowedHost\(url, serviceKey\)/)
+  assert.match(MAIN_JS, /isAllowedHost\(url, service\.key\)/)
+  assert.match(MAIN_JS, /isAllowedHost\(meta\.href, serviceKey\)/)
 })
 
 /* ---------- Audit-fix regressions ---------- */
@@ -426,7 +545,7 @@ test('downloads drawer clears rows and closes when the list empties', () => {
   const block = PANEL_JS.match(/function renderDownloads\(\{ list, activeCount \}\) \{([\s\S]*?)\n  dlToggleBtn\.hidden = false/)
   assert.ok(block, 'renderDownloads empty branch missing')
   assert.match(block[1], /if \(dlList\) dlList\.innerHTML = ''/)
-  assert.match(block[1], /if \(dlDrawer\) dlDrawer\.hidden = true/)
+  assert.match(block[1], /setDownloadsDrawerOpen\(false\)/)
 })
 
 test('scratchpad rejects stale snapshots that predate an in-flight save', () => {
@@ -652,6 +771,23 @@ test('service preload page metadata is handled by main and sender-scoped to Brow
   assert.match(MAIN_JS, /handleMicrosoftNavigation\(service, meta\.href\)/)
 })
 
+test('panel commands are shape-checked before dispatch', () => {
+  const block = MAIN_JS.match(/ipcMain\.on\('panel:command', \(event, command\) => \{([\s\S]*?)\n\s*switch \(command\.type\)/)
+  assert.ok(block, 'panel command handler missing')
+  assert.match(block[1], /event\.sender !== panelWindow\?\.webContents && event\.sender !== menuWindow\?\.webContents/)
+  assert.match(block[1], /if \(!command \|\| typeof command\.type !== 'string'\) return/)
+})
+
+test('partial settings updates merge nested preference groups', () => {
+  assert.match(MAIN_JS, /function mergeObjectSetting\(current, patch\)/)
+  const block = MAIN_JS.match(/case 'update-settings':([\s\S]*?)\n\s*break/)
+  assert.ok(block, 'update-settings handler missing')
+  assert.match(block[1], /notif: mergeObjectSetting\(settings\.notif, command\.settings\.notif\)/)
+  assert.match(block[1], /feedPrefs: mergeObjectSetting\(settings\.feedPrefs, command\.settings\.feedPrefs\)/)
+  assert.match(block[1], /downloads: mergeObjectSetting\(settings\.downloads, command\.settings\.downloads\)/)
+  assert.doesNotMatch(block[1], /notif: command\.settings\.notif \|\| settings\.notif/)
+})
+
 test('tray dropdown status sums unread across every mail service', () => {
   const statusBlock = MENU_JS.match(/function renderStatus\(mailService\) \{([\s\S]*?)\n\}/)
   assert.ok(statusBlock, 'renderStatus missing')
@@ -680,6 +816,17 @@ test('build wrapper does not invoke macOS GUI tooling unless explicitly requeste
   assert.match(BUILD_SH, /MAILSTUDIO_OPEN_DIST/)
   assert.match(BUILD_SH, /\$\{MAILSTUDIO_OPEN_DIST:-\}/)
   assert.doesNotMatch(BUILD_SH, /if \[\[ "\$\(uname\)" == "Darwin" \]\]; then\n\s*open dist\//)
+})
+
+test('release and build paths run checks and tests before packaging', () => {
+  assert.match(PACKAGE_JSON.scripts.release, /npm run check && npm test && electron-builder --publish always/)
+  assert.match(RELEASE_WORKFLOW, /name: Syntax check[\s\S]*run: npm run check/)
+  assert.match(RELEASE_WORKFLOW, /name: Unit tests[\s\S]*run: npm test/)
+  assert.match(RELEASE_WORKFLOW, /name: Build and publish[\s\S]*npx electron-builder --publish always/)
+  assert.match(BUILD_SH, /npm ci --prefer-offline/)
+  assert.match(BUILD_SH, /MAILSTUDIO_SKIP_TESTS/)
+  assert.match(BUILD_SH, /npm test/)
+  assert.ok(BUILD_SH.indexOf('npm run check') < BUILD_SH.indexOf('npm test'))
 })
 
 test('development docs match release workflow platform split', () => {

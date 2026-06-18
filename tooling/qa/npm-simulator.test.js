@@ -109,6 +109,41 @@ test('simulator: API wrappers surface auth and throttle states as typed errors',
   })
 })
 
+test('simulator: Teams presence controls post preferred presence and reset through Graph', async () => {
+  const apiFeeds = require(path.join(ROOT, 'src', 'main', 'api-feeds.js'))
+  const calls = []
+  await withMockedFetch(async (url, options) => {
+    calls.push({ url, options })
+    return mockJsonResponse(204, {})
+  }, async () => {
+    await apiFeeds.setTeamsPreferredPresence('graph-token', 'user id/1', {
+      availability: 'DoNotDisturb',
+      activity: 'DoNotDisturb',
+      expirationDuration: 'PT1H'
+    })
+    await apiFeeds.clearTeamsPreferredPresence('graph-token', 'user id/1')
+  })
+
+  assert.equal(calls.length, 2)
+  assert.equal(
+    calls[0].url,
+    'https://graph.microsoft.com/v1.0/users/user%20id%2F1/presence/setUserPreferredPresence'
+  )
+  assert.equal(calls[0].options.method, 'POST')
+  assert.equal(calls[0].options.headers.Authorization, 'Bearer graph-token')
+  assert.equal(calls[0].options.headers['Content-Type'], 'application/json')
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    availability: 'DoNotDisturb',
+    activity: 'DoNotDisturb',
+    expirationDuration: 'PT1H'
+  })
+  assert.equal(
+    calls[1].url,
+    'https://graph.microsoft.com/v1.0/users/user%20id%2F1/presence/clearUserPreferredPresence'
+  )
+  assert.deepEqual(JSON.parse(calls[1].options.body), {})
+})
+
 test('simulator: Asana task fetch uses bearer auth, encoded workspace, and preserves permalinks', async () => {
   const apiFeeds = require(path.join(ROOT, 'src', 'main', 'api-feeds.js'))
   const calls = []

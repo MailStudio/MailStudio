@@ -85,6 +85,8 @@ function applyTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme)
   themeToggle.innerHTML = theme === 'dark' ? MOON_ICON : SUN_ICON
   themeToggle.title = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'
+  themeToggle.setAttribute('aria-label', themeToggle.title)
+  themeToggle.setAttribute('aria-pressed', theme === 'light' ? 'true' : 'false')
 }
 
 /* ---------- Live feeds ---------- */
@@ -259,18 +261,27 @@ function renderServices(snapshot) {
     const inSplit = splitIndex !== -1
     const isActive = service.key === snapshot.activeServiceKey
     const feedCollapsed = Boolean(service.feedCollapsed)
+    const railMode = Boolean(snapshot.sidebarCollapsed && snapshot.collapseMode === 'rail' && !snapshot.settingsOpen)
 
     const row = document.createElement('div')
     row.className = 'service-row'
 
     const homeBtn = document.createElement('button')
     homeBtn.type = 'button'
-    homeBtn.className = 'service-home'
-    homeBtn.title = `Home — ${service.label}`
+    const homeClasses = ['service-home']
+    if (railMode && (isActive || inSplit)) homeClasses.push('active')
+    if (railMode && inSplit) homeClasses.push('in-split')
+    if (railMode && inSplit && isActive) homeClasses.push('split-focus')
+    homeBtn.className = homeClasses.join(' ')
+    homeBtn.title = railMode
+      ? (inSplit ? `${service.label} · Split pane ${splitIndex + 1}` : `Switch to ${service.label}`)
+      : `Home — ${service.label}`
+    homeBtn.setAttribute('aria-label', railMode ? `Switch to ${service.label}` : `Open ${service.label} home`)
     homeBtn.innerHTML = `<span class="service-icon">${SERVICE_ICONS[service.icon] || SERVICE_ICONS.link}</span>`
     homeBtn.addEventListener('click', (event) => {
       event.stopPropagation()
-      window.panelApi.sendCommand({ type: 'go-service-home', serviceKey: service.key })
+      const type = railMode && (event.metaKey || event.ctrlKey) ? 'split-select' : railMode ? 'switch-service' : 'go-service-home'
+      window.panelApi.sendCommand({ type, serviceKey: service.key })
     })
     row.appendChild(homeBtn)
 
@@ -319,6 +330,7 @@ function renderServices(snapshot) {
       collapseBtn.type = 'button'
       collapseBtn.className = `feed-collapse${feedCollapsed ? ' collapsed' : ''}`
       collapseBtn.title = feedCollapsed ? 'Show notifications' : 'Hide notifications'
+      collapseBtn.setAttribute('aria-label', feedCollapsed ? `Show ${service.label} notifications` : `Hide ${service.label} notifications`)
       collapseBtn.setAttribute('aria-expanded', feedCollapsed ? 'false' : 'true')
       collapseBtn.innerHTML = FEED_COLLAPSE_ICON
       collapseBtn.addEventListener('click', (event) => {
@@ -460,9 +472,11 @@ function renderSettings(snapshot) {
     })
 
     const up = document.createElement('button')
+    up.type = 'button'
     up.className = 'set-icon-btn'
     up.innerHTML = ARROW_UP
     up.title = 'Move up'
+    up.setAttribute('aria-label', `Move ${service.label} up`)
     up.disabled = index === 0
     up.addEventListener('click', () => {
       const list = workingServices()
@@ -471,9 +485,11 @@ function renderSettings(snapshot) {
     })
 
     const down = document.createElement('button')
+    down.type = 'button'
     down.className = 'set-icon-btn'
     down.innerHTML = ARROW_DOWN
     down.title = 'Move down'
+    down.setAttribute('aria-label', `Move ${service.label} down`)
     down.disabled = index === services.length - 1
     down.addEventListener('click', () => {
       const list = workingServices()
@@ -491,8 +507,12 @@ function renderSettings(snapshot) {
     name.title = service.builtin ? `${service.label} (built-in)` : `${service.label} (pinned)`
 
     const sw = document.createElement('button')
+    sw.type = 'button'
     sw.className = `set-switch${service.visible ? ' on' : ''}`
     sw.title = service.visible ? 'Hide from sidebar' : 'Show in sidebar'
+    sw.setAttribute('role', 'switch')
+    sw.setAttribute('aria-checked', service.visible ? 'true' : 'false')
+    sw.setAttribute('aria-label', `${service.visible ? 'Hide' : 'Show'} ${service.label} in sidebar`)
     sw.addEventListener('click', () => {
       const list = workingServices()
       list[index].visible = !list[index].visible
@@ -503,8 +523,10 @@ function renderSettings(snapshot) {
 
     if (!service.builtin) {
       const rename = document.createElement('button')
+      rename.type = 'button'
       rename.className = 'set-icon-btn'
       rename.title = 'Rename pinned site'
+      rename.setAttribute('aria-label', `Rename ${service.label}`)
       rename.textContent = 'Aa'
       rename.addEventListener('click', () => {
         const next = window.prompt('Pinned site name', service.label)
@@ -516,8 +538,10 @@ function renderSettings(snapshot) {
         sendSettings(list)
       })
       const editUrl = document.createElement('button')
+      editUrl.type = 'button'
       editUrl.className = 'set-icon-btn'
       editUrl.title = 'Edit pinned site URL'
+      editUrl.setAttribute('aria-label', `Edit ${service.label} URL`)
       editUrl.textContent = 'URL'
       editUrl.addEventListener('click', () => {
         const next = window.prompt('Pinned site URL', service.url)
@@ -536,9 +560,11 @@ function renderSettings(snapshot) {
         }
       })
       const del = document.createElement('button')
+      del.type = 'button'
       del.className = 'set-icon-btn danger'
       del.innerHTML = TRASH
       del.title = 'Remove pinned site'
+      del.setAttribute('aria-label', `Remove ${service.label}`)
       del.addEventListener('click', () => {
         const list = workingServices().filter((s) => s.key !== service.key)
         sendSettings(list)
@@ -761,6 +787,89 @@ function renderNotifSettings(snapshot) {
   }
 }
 
+/* ---------- Teams presence popover ---------- */
+const TEAMS_DURATION_LABELS = {
+  default: 'Default',
+  '30m': '30 min',
+  '1h': '1 hour',
+  '4h': '4 hours',
+  '8h': '8 hours'
+}
+let teamsDurationKey = localStorage.getItem('mailstudio-teams-duration') || 'default'
+
+const teamsPresencePopover = document.getElementById('teams-presence-popover')
+const teamsPresenceOpen = document.getElementById('teams-presence-open')
+const teamsPresenceClose = document.getElementById('teams-presence-close')
+const teamsDurationToggle = document.getElementById('teams-duration-toggle')
+const teamsDurationOptions = document.getElementById('teams-duration-options')
+const teamsDurationLabel = document.getElementById('teams-duration-label')
+const teamsPresenceFeedback = document.getElementById('teams-presence-feedback')
+const teamsPresenceReset = document.getElementById('teams-presence-reset')
+
+function isTeamsPresenceOpen() {
+  return Boolean(teamsPresencePopover && !teamsPresencePopover.hidden)
+}
+
+function hasOtherTransientOverlay(kind) {
+  if (kind !== 'command' && commandPalette && !commandPalette.hidden) return true
+  if (kind !== 'shortcut' && shortcutGuide && !shortcutGuide.hidden) return true
+  if (kind !== 'downloads' && dlDrawer && !dlDrawer.hidden) return true
+  if (kind !== 'teams' && isTeamsPresenceOpen()) return true
+  return false
+}
+
+function renderTeamsPresence(snapshot) {
+  if (!teamsPresencePopover) return
+  const conn = snapshot.connections || {}
+  const connected = Boolean(conn.microsoft && conn.microsoft.status === 'connected')
+  const state = snapshot.teamsPresence || {}
+  const applying = state.status === 'applying'
+  for (const btn of teamsPresencePopover.querySelectorAll('[data-teams-presence]')) {
+    const active = state.activeKey === btn.dataset.teamsPresence && state.status !== 'error'
+    btn.disabled = !connected || applying
+    btn.classList.toggle('active', active)
+    btn.setAttribute('role', 'option')
+    btn.setAttribute('aria-selected', active ? 'true' : 'false')
+  }
+  if (teamsPresenceReset) teamsPresenceReset.disabled = !connected || applying
+  if (teamsDurationLabel) teamsDurationLabel.textContent = TEAMS_DURATION_LABELS[teamsDurationKey] || TEAMS_DURATION_LABELS.default
+  for (const btn of teamsPresencePopover.querySelectorAll('[data-teams-duration]')) {
+    btn.classList.toggle('active', btn.dataset.teamsDuration === teamsDurationKey)
+  }
+  if (teamsPresenceFeedback) {
+    let text = ''
+    let error = false
+    if (!connected) {
+      text = 'Connect Microsoft first. Reconnect if your token was granted before Teams presence support was added.'
+      error = true
+    } else if (state.status === 'applying') {
+      text = state.message || 'Updating Teams status...'
+    } else if (state.status === 'error') {
+      text = state.error || 'Teams status could not be updated.'
+      error = true
+    } else if (state.message) {
+      text = state.message
+    }
+    teamsPresenceFeedback.hidden = !text
+    teamsPresenceFeedback.textContent = text
+    teamsPresenceFeedback.classList.toggle('error', error)
+  }
+}
+
+function setTeamsPresencePopoverOpen(open) {
+  if (!teamsPresencePopover) return
+  const wasOpen = !teamsPresencePopover.hidden
+  teamsPresencePopover.hidden = !open
+  if (open && !wasOpen) {
+    renderTeamsPresence(latest || {})
+    window.panelApi.sendCommand({ type: 'open-transient-overlay' })
+    const first = teamsPresencePopover.querySelector('[data-teams-presence]')
+    if (first) first.focus()
+  } else if (!open && wasOpen && !hasOtherTransientOverlay('teams')) {
+    window.panelApi.sendCommand({ type: 'close-transient-overlay' })
+  }
+}
+
 /* ---------- Summary strip ---------- */
 function renderSummary(snapshot) {
   let mail = 0
@@ -803,8 +912,7 @@ function render(snapshot) {
   // Apply the persisted sidebar width from settings. Don't clobber it while
   // the user is actively dragging the resize handle (sbDrag is live then).
   if (!sbDrag && typeof snapshot.sidebarExpandedWidth === 'number') {
-    SB_EXPANDED = snapshot.sidebarExpandedWidth
-    document.documentElement.style.setProperty('--sb-expanded', `${SB_EXPANDED}px`)
+    paintSidebarWidth(snapshot.sidebarExpandedWidth)
   }
 
   document.body.classList.toggle('collapsed', Boolean(snapshot.sidebarCollapsed))
@@ -824,6 +932,8 @@ function render(snapshot) {
     const active = Boolean(snapshot.globalSnoozed)
     snoozeBtn.classList.toggle('active', active)
     snoozeBtn.title = active ? 'Notifications snoozed — click to resume' : 'Snooze all notifications & sound'
+    snoozeBtn.setAttribute('aria-label', snoozeBtn.title)
+    snoozeBtn.setAttribute('aria-pressed', active ? 'true' : 'false')
   }
 
   renderServices(snapshot)
@@ -857,6 +967,7 @@ function render(snapshot) {
     if (!prevSettingsOpen) showSetPage('root')
     renderSettings(snapshot)
     renderNotifSettings(snapshot)
+    renderTeamsPresence(snapshot)
     // Keep the Connections page cards live (without yanking a field being typed).
     if (settingsPage === 'connections') {
       const ae = document.activeElement
@@ -865,6 +976,8 @@ function render(snapshot) {
       const warn = document.getElementById('set-encwarn')
       if (warn) warn.hidden = !(snapshot.connections && snapshot.connections.encryptionAvailable === false)
     }
+  } else if (isTeamsPresenceOpen()) {
+    setTeamsPresencePopoverOpen(false)
   }
   prevSettingsOpen = Boolean(snapshot.settingsOpen)
 }
@@ -886,14 +999,19 @@ const sbResizeHandle = document.getElementById('sidebar-resize-handle')
 let sbDrag = null   // { startX, startWidth } while dragging
 let sbLastSentWidth = null
 
-function onSbMove(e) {
-  if (!sbDrag) return
-  const newWidth = Math.min(SB_MAX, Math.max(SB_MIN, sbDrag.startWidth + e.clientX - sbDrag.startX))
-  // Update CSS variable immediately so the sidebar and handle move live.
+function paintSidebarWidth(width) {
+  const newWidth = Math.round(Math.min(SB_MAX, Math.max(SB_MIN, width)))
   document.documentElement.style.setProperty('--sb-expanded', `${newWidth}px`)
   SB_EXPANDED = newWidth
   if (latest) latest.sidebarExpandedWidth = newWidth
+  if (sbResizeHandle) sbResizeHandle.setAttribute('aria-valuenow', String(newWidth))
   positionSplitDivider()
+  return newWidth
+}
+
+function onSbMove(e) {
+  if (!sbDrag) return
+  const newWidth = paintSidebarWidth(sbDrag.startWidth + e.clientX - sbDrag.startX)
   // Throttle IPC: only send when width changed by ≥2px to avoid flooding main.
   if (sbLastSentWidth === null || Math.abs(newWidth - sbLastSentWidth) >= 2) {
     sbLastSentWidth = newWidth
@@ -923,6 +1041,19 @@ if (sbResizeHandle) {
     document.addEventListener('mousemove', onSbMove, true)
     document.addEventListener('mouseup', onSbUp, true)
     window.addEventListener('blur', onSbUp)
+  })
+  sbResizeHandle.addEventListener('keydown', (e) => {
+    if (document.body.classList.contains('collapsed') && !document.body.classList.contains('settings-open')) return
+    let next = SB_EXPANDED
+    const step = e.shiftKey ? 40 : 10
+    if (e.key === 'ArrowLeft') next -= step
+    else if (e.key === 'ArrowRight') next += step
+    else if (e.key === 'Home') next = SB_MIN
+    else if (e.key === 'End') next = SB_MAX
+    else return
+    e.preventDefault()
+    const width = paintSidebarWidth(next)
+    window.panelApi.sendCommand({ type: 'set-sidebar-width', width, save: true })
   })
 }
 
@@ -974,6 +1105,10 @@ function positionSplitDivider() {
   const horizontal = latest.splitOrientation === 'horizontal'
   const r = contentRect(latest)
   const ratio = clampRatio(typeof latest.splitRatio === 'number' ? latest.splitRatio : 0.5)
+  splitDivider.setAttribute('aria-orientation', horizontal ? 'horizontal' : 'vertical')
+  splitDivider.setAttribute('aria-valuemin', String(Math.round(SPLIT_MIN * 100)))
+  splitDivider.setAttribute('aria-valuemax', String(Math.round(SPLIT_MAX * 100)))
+  splitDivider.setAttribute('aria-valuenow', String(Math.round(ratio * 100)))
   splitDivider.classList.toggle('horizontal', horizontal)
   splitDivider.classList.toggle('vertical', !horizontal)
   if (horizontal) {
@@ -1068,6 +1203,24 @@ if (splitDivider && splitGhost) {
     document.addEventListener('mouseup', endSplitDrag, true)
     window.addEventListener('blur', endSplitDrag)
   })
+  splitDivider.addEventListener('keydown', (e) => {
+    if (!latest || !splitActive(latest)) return
+    const horizontal = latest.splitOrientation === 'horizontal'
+    let ratio = clampRatio(typeof latest.splitRatio === 'number' ? latest.splitRatio : 0.5)
+    const step = e.shiftKey ? 0.1 : 0.03
+    if (e.key === 'Home') ratio = SPLIT_MIN
+    else if (e.key === 'End') ratio = SPLIT_MAX
+    else if (horizontal && e.key === 'ArrowUp') ratio -= step
+    else if (horizontal && e.key === 'ArrowDown') ratio += step
+    else if (!horizontal && e.key === 'ArrowLeft') ratio -= step
+    else if (!horizontal && e.key === 'ArrowRight') ratio += step
+    else return
+    e.preventDefault()
+    ratio = clampRatio(ratio)
+    latest.splitRatio = ratio
+    positionSplitDivider()
+    window.panelApi.sendCommand({ type: 'split-drag-end', ratio })
+  })
 }
 
 // Main repositions the web views on window resize but doesn't push a snapshot,
@@ -1087,6 +1240,55 @@ for (const btn of document.querySelectorAll('[data-notif]')) {
     sendNotif(notif)
   })
 }
+
+if (teamsPresenceOpen) {
+  teamsPresenceOpen.addEventListener('click', () => setTeamsPresencePopoverOpen(true))
+}
+if (teamsPresenceClose) {
+  teamsPresenceClose.addEventListener('click', () => setTeamsPresencePopoverOpen(false))
+}
+if (teamsPresencePopover) {
+  teamsPresencePopover.querySelectorAll('[data-teams-presence]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return
+      window.panelApi.sendCommand({
+        type: 'set-teams-presence',
+        statusKey: btn.dataset.teamsPresence,
+        durationKey: teamsDurationKey
+      })
+    })
+  })
+  teamsPresencePopover.querySelectorAll('[data-teams-duration]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      teamsDurationKey = TEAMS_DURATION_LABELS[btn.dataset.teamsDuration] ? btn.dataset.teamsDuration : 'default'
+      localStorage.setItem('mailstudio-teams-duration', teamsDurationKey)
+      if (teamsDurationOptions) teamsDurationOptions.hidden = true
+      if (teamsDurationToggle) teamsDurationToggle.setAttribute('aria-expanded', 'false')
+      renderTeamsPresence(latest || {})
+    })
+  })
+}
+if (teamsDurationToggle && teamsDurationOptions) {
+  teamsDurationToggle.addEventListener('click', () => {
+    const open = teamsDurationOptions.hidden
+    teamsDurationOptions.hidden = !open
+    teamsDurationToggle.setAttribute('aria-expanded', open ? 'true' : 'false')
+  })
+}
+if (teamsPresenceReset) {
+  teamsPresenceReset.addEventListener('click', () => {
+    if (teamsPresenceReset.disabled) return
+    window.panelApi.sendCommand({ type: 'reset-teams-presence' })
+  })
+}
+document.addEventListener('click', (e) => {
+  if (!isTeamsPresenceOpen()) return
+  if (
+    teamsPresencePopover.contains(e.target) ||
+    (teamsPresenceOpen && (e.target === teamsPresenceOpen || teamsPresenceOpen.contains(e.target)))
+  ) return
+  setTeamsPresencePopoverOpen(false)
+})
 
 // Settings page navigation (root list rows + the "Manage connections" link).
 for (const row of document.querySelectorAll('[data-goto]')) {
@@ -1247,7 +1449,7 @@ function paletteCommands() {
     { title: 'Refresh feeds', sub: 'Action', run: () => window.panelApi.sendCommand({ type: 'refresh-feeds' }) },
     { title: 'Snooze all notifications', sub: 'Action', run: () => window.panelApi.sendCommand({ type: 'global-snooze-menu' }) },
     { title: 'Open settings', sub: 'Action', run: () => window.panelApi.sendCommand({ type: 'open-settings' }) },
-    { title: 'Open downloads', sub: 'Action', run: () => { if (dlDrawer) dlDrawer.hidden = false } },
+    { title: 'Open downloads', sub: 'Action', run: () => setDownloadsDrawerOpen(true) },
     { title: 'Show keyboard shortcuts', sub: 'Help', run: openShortcutGuide },
     ...pages
   ]
@@ -1284,7 +1486,7 @@ function openCommandPalette() {
 function closeCommandPalette() {
   const wasOpen = commandPalette && !commandPalette.hidden
   if (commandPalette) commandPalette.hidden = true
-  if (wasOpen && (!shortcutGuide || shortcutGuide.hidden)) {
+  if (wasOpen && !hasOtherTransientOverlay('command')) {
     window.panelApi.sendCommand({ type: 'close-transient-overlay' })
   }
 }
@@ -1300,7 +1502,7 @@ function openShortcutGuide() {
 function closeShortcutGuide() {
   const wasOpen = shortcutGuide && !shortcutGuide.hidden
   if (shortcutGuide) shortcutGuide.hidden = true
-  if (wasOpen && (!commandPalette || commandPalette.hidden)) {
+  if (wasOpen && !hasOtherTransientOverlay('shortcut')) {
     window.panelApi.sendCommand({ type: 'close-transient-overlay' })
   }
 }
@@ -1336,6 +1538,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     closeCommandPalette()
     closeShortcutGuide()
+    setTeamsPresencePopoverOpen(false)
   }
 })
 
@@ -1384,6 +1587,17 @@ const dlEmpty = document.getElementById('dl-empty')
 const dlToggleBtn = document.getElementById('dl-toggle-btn')
 const dlBadge = document.getElementById('dl-badge')
 
+function setDownloadsDrawerOpen(open) {
+  if (!dlDrawer) return
+  const wasOpen = !dlDrawer.hidden
+  dlDrawer.hidden = !open
+  if (open && !wasOpen) {
+    window.panelApi.sendCommand({ type: 'open-transient-overlay' })
+  } else if (!open && wasOpen && !hasOtherTransientOverlay('downloads')) {
+    window.panelApi.sendCommand({ type: 'close-transient-overlay' })
+  }
+}
+
 // Classify a filename to drive icon colour and the file-type icon glyph.
 function dlFileKind(filename) {
   const ext = (filename.split('.').pop() || '').toLowerCase()
@@ -1421,7 +1635,7 @@ function renderDownloads({ list, activeCount }) {
     // emptied list can't leave ghost downloads (or an empty drawer) on screen.
     if (dlList) dlList.innerHTML = ''
     if (dlEmpty) dlEmpty.hidden = false
-    if (dlDrawer) dlDrawer.hidden = true
+    setDownloadsDrawerOpen(false)
     return
   }
   dlToggleBtn.hidden = false
@@ -1504,12 +1718,12 @@ function renderDownloads({ list, activeCount }) {
 if (dlToggleBtn) {
   dlToggleBtn.addEventListener('click', (e) => {
     e.stopPropagation()
-    dlDrawer.hidden = !dlDrawer.hidden
+    setDownloadsDrawerOpen(dlDrawer.hidden)
   })
 }
 if (document.getElementById('dl-drawer-close')) {
   document.getElementById('dl-drawer-close').addEventListener('click', () => {
-    dlDrawer.hidden = true
+    setDownloadsDrawerOpen(false)
   })
 }
 if (document.getElementById('dl-clear-btn')) {
@@ -1520,7 +1734,7 @@ if (document.getElementById('dl-clear-btn')) {
 // Click outside the drawer to dismiss it
 document.addEventListener('click', (e) => {
   if (dlDrawer && !dlDrawer.hidden && !dlDrawer.contains(e.target) && e.target !== dlToggleBtn) {
-    dlDrawer.hidden = true
+    setDownloadsDrawerOpen(false)
   }
 })
 
@@ -1533,7 +1747,7 @@ window.panelApi.onEvent((data) => {
     openCommandPalette()
   }
   if (data && data.type === 'download-started') {
-    if (dlDrawer) dlDrawer.hidden = false
+    setDownloadsDrawerOpen(true)
   }
 })
 
@@ -1951,6 +2165,7 @@ function animateBurst() {
 
 function spawnBurst() {
   if (!BURST_CANVAS) return
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
   const W = window.innerWidth
   const H = window.innerHeight
   BURST_CANVAS.width = W
@@ -2080,10 +2295,16 @@ paintFocus()
 const toolsDrawer = document.getElementById('tools-drawer')
 const toolsTab = document.getElementById('tools-tab')
 if (toolsTab && toolsDrawer) {
+  const syncToolsExpanded = () => {
+    toolsTab.setAttribute('aria-expanded', toolsDrawer.classList.contains('open') ? 'true' : 'false')
+    toolsTab.setAttribute('aria-controls', 'tools-drawer')
+  }
   if (localStorage.getItem('mailstudio-tools-open')) toolsDrawer.classList.add('open')
+  syncToolsExpanded()
   toolsTab.addEventListener('click', () => {
     const open = toolsDrawer.classList.toggle('open')
     localStorage.setItem('mailstudio-tools-open', open ? '1' : '')
+    syncToolsExpanded()
   })
 }
 

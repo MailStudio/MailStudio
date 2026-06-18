@@ -1,6 +1,7 @@
 const path = require('path')
 const os = require('os')
 const fs = require('fs')
+const { pathToFileURL } = require('url')
 const {
   app,
   BrowserView,
@@ -65,7 +66,7 @@ function getAppUserAgent() {
 // Trusted base domains that may load in-app, matched by suffix so first-party
 // subdomains (login.microsoftonline.com, teams.microsoft.com, *.cloud.microsoft,
 // etc.) are covered without an exhaustive list. Custom pinned sites are NOT
-// granted here — they're allowed only by their exact host (allowedExactHosts).
+// granted here — they're allowed only by exact host in their own service view.
 const TRUSTED_BASE_DOMAINS = [
   'office.com',
   'office365.com',
@@ -82,7 +83,7 @@ const TRUSTED_BASE_DOMAINS = [
 ]
 
 let settings = store.normalize(null)
-let allowedExactHosts = new Set()
+let allowedCustomHostsByService = new Map()
 const configuredPartitions = new Set()
 
 // Open links externally only for safe schemes — never let a page hand us a
@@ -148,6 +149,13 @@ let menuWindow = null
 let feedTimer = null
 let lastTeamsNotificationCount = 0
 let teamsNotifReady = false
+let teamsPresenceState = {
+  status: 'idle',
+  activeKey: null,
+  message: '',
+  error: null,
+  updatedAt: 0
+}
 const mailNotificationState = new Map()
 // Asana: ids already seen, so only genuinely new assigned tasks notify.
 const notifiedTaskIds = new Set()
@@ -214,6 +222,19 @@ function onServiceZoomChanged(key, direction) {
 // here so the panel shows a unified list with OS-native save dialog + progress.
 let downloadIdSeq = 0
 const downloads = new Map() // id → entry (entry._item is the live DownloadItem)
+
+function writeOwnerOnlyFile(target, payload) {
+  const tmp = `${target}.tmp`
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  try { fs.unlinkSync(tmp) } catch { /* file may not exist */ }
+  fs.writeFileSync(tmp, payload, { encoding: 'utf8', mode: 0o600 })
+  fs.renameSync(tmp, target)
+  try {
+    fs.chmodSync(target, 0o600)
+  } catch {
+    /* ignore chmod failures on restrictive filesystems */
+  }
+}
 
 function visibleServiceKeys() {
   return new Set(settings.services.filter((service) => service.visible).map((service) => service.key))
@@ -380,9 +401,13 @@ function ensureServiceState(service) {
 }
 
 function buildAllowedHosts() {
-  // Exact hosts for pinned sites (built-ins are covered by TRUSTED_BASE_DOMAINS).
-  const hosts = new Set()
+  // Exact hosts for pinned custom sites, scoped to the service that owns them.
+  // Built-ins are covered by TRUSTED_BASE_DOMAINS and shared mailboxes use
+  // trusted Outlook hosts, so they do not need custom exact-host entries.
+  const hostsByService = new Map()
   for (const service of settings.services) {
+    if (service.builtin || isMailboxService(service)) continue
+    const hosts = new Set()
     for (const value of [service.url, service.home]) {
       try {
         hosts.add(new URL(value).hostname)
@@ -390,8 +415,9 @@ function buildAllowedHosts() {
         /* ignore */
       }
     }
+    if (hosts.size) hostsByService.set(service.key, hosts)
   }
-  allowedExactHosts = hosts
+  allowedCustomHostsByService = hostsByService
 }
 
 function isTrustedDomain(host) {
@@ -407,6 +433,21 @@ function isSnoozed(serviceKey) {
 
 // Services that fire notifications and can therefore be snoozed individually.
 const SNOOZABLE_SERVICES = ['mail', 'teams', 'calendar', 'asana']
+const TEAMS_PRESENCE_OPTIONS = {
+  available: { label: 'Available', availability: 'Available', activity: 'Available' },
+  busy: { label: 'Busy', availability: 'Busy', activity: 'Busy' },
+  dnd: { label: 'Do not disturb', availability: 'DoNotDisturb', activity: 'DoNotDisturb' },
+  brb: { label: 'Be right back', availability: 'BeRightBack', activity: 'BeRightBack' },
+  away: { label: 'Appear away', availability: 'Away', activity: 'Away' },
+  offline: { label: 'Appear offline', availability: 'Offline', activity: 'OffWork' }
+}
+const TEAMS_PRESENCE_DURATIONS = {
+  default: null,
+  '30m': 'PT30M',
+  '1h': 'PT1H',
+  '4h': 'PT4H',
+  '8h': 'PT8H'
+}
 
 function isSnoozableService(serviceKey) {
   if (SNOOZABLE_SERVICES.includes(serviceKey)) return true
@@ -460,6 +501,20 @@ function setGlobalSnooze(expiresAtMs) {
   // Mute reflects each service's resulting snooze state across all open views.
   for (const key of serviceViews.keys()) applyServiceMute(key)
   pushSnapshot()
+}
+
+function setTeamsPresenceState(patch) {
+  teamsPresenceState = {
+    ...teamsPresenceState,
+    ...(patch || {}),
+    updatedAt: Date.now()
+  }
+  pushSnapshot()
+}
+
+function mergeObjectSetting(current, patch) {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return current
+  return { ...(current || {}), ...patch }
 }
 
 // Each script resolves to true only when it actually clicked a compose
@@ -1178,10 +1233,12 @@ function parseUnreadCount(title) {
   return match ? Number.parseInt(match[1], 10) : 0
 }
 
-function isAllowedHost(urlString) {
+function isAllowedHost(urlString, serviceKey = null) {
   try {
     const host = new URL(urlString).hostname
-    return isTrustedDomain(host) || allowedExactHosts.has(host)
+    if (isTrustedDomain(host)) return true
+    const serviceHosts = serviceKey ? allowedCustomHostsByService.get(serviceKey) : null
+    return Boolean(serviceHosts && serviceHosts.has(host))
   } catch {
     return false
   }
@@ -1195,7 +1252,7 @@ function loadInServiceView(view, serviceKey, url) {
   let allowed = false
   try {
     const protocol = new URL(url).protocol
-    allowed = (protocol === 'http:' || protocol === 'https:') && isAllowedHost(url)
+    allowed = (protocol === 'http:' || protocol === 'https:') && isAllowedHost(url, serviceKey)
   } catch {
     allowed = false
   }
@@ -1426,7 +1483,7 @@ function openLinkInApp(url) {
     return
   }
   const view = serviceViews.get(activeServiceKey)
-  if (isAllowedHost(url) && view && !view.webContents.isDestroyed()) {
+  if (isAllowedHost(url, activeServiceKey) && view && !view.webContents.isDestroyed()) {
     loadInServiceView(view, activeServiceKey, url)
     showService(activeServiceKey)
     return
@@ -1585,8 +1642,8 @@ function configurePartition(partitionName) {
   // exploited.
   const ALLOWED_PERMISSIONS = new Set(['notifications', 'clipboard-sanitized-write'])
 
-  const permissionAllowed = (permission, url) => {
-    if (!isAllowedHost(url)) return false
+  const permissionAllowed = (permission, url, webContents) => {
+    if (!isAllowedHost(url, serviceKeyForWebContents(webContents))) return false
     if (ALLOWED_PERMISSIONS.has(permission)) return true
     if (permission === 'media') {
       try {
@@ -1598,12 +1655,12 @@ function configurePartition(partitionName) {
     return false
   }
 
-  partitionSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin) => {
-    return permissionAllowed(permission, requestingOrigin)
+  partitionSession.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
+    return permissionAllowed(permission, requestingOrigin, webContents)
   })
 
-  partitionSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
-    const allowed = permissionAllowed(permission, details.requestingUrl)
+  partitionSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const allowed = permissionAllowed(permission, details.requestingUrl, webContents)
     if (!allowed) {
       console.warn(`[permission] denied ${permission} for ${details.requestingUrl}`)
     }
@@ -1939,7 +1996,7 @@ function createServiceView(service) {
     }
     // Trusted Microsoft/Asana page with no owning tab: keep it in-app in the
     // tab that spawned it rather than bouncing to the default browser.
-    if (isAllowedHost(url)) {
+    if (isAllowedHost(url, service.key)) {
       loadInServiceView(view, service.key, url)
       return { action: 'deny' }
     }
@@ -1973,7 +2030,7 @@ function createServiceView(service) {
       }
       return
     }
-    if (!isAllowedHost(url)) {
+    if (!isAllowedHost(url, service.key)) {
       event.preventDefault()
       openExternalSafe(url)
     }
@@ -3016,16 +3073,22 @@ function updateTray() {
 // The panel + dropdown are trusted local pages that should never navigate away
 // or spawn windows. Block both; stray links route in-app when a tab owns them
 // (Microsoft/Asana), otherwise to the browser.
-function hardenLocalWindow(win) {
+function hardenLocalWindow(win, allowedFile) {
   const wc = win.webContents
+  const allowedFileUrl = pathToFileURL(allowedFile).href
   wc.setWindowOpenHandler(({ url }) => {
     openLinkInApp(url)
     return { action: 'deny' }
   })
   wc.on('will-navigate', (event, url) => {
-    if (!url.startsWith('file://')) {
-      event.preventDefault()
-      openLinkInApp(url)
+    if (url === allowedFileUrl) return
+    event.preventDefault()
+    try {
+      if (new URL(url).protocol !== 'file:') {
+        openLinkInApp(url)
+      }
+    } catch {
+      /* ignore malformed local navigation */
     }
   })
 }
@@ -3060,8 +3123,9 @@ function createPanelWindow() {
 
   panelWindow.setMaxListeners(30)
   panelWindow.webContents.setMaxListeners(20)
-  panelWindow.loadFile(path.join(__dirname, '..', 'renderer', 'panel.html'))
-  hardenLocalWindow(panelWindow)
+  const panelHtml = path.join(__dirname, '..', 'renderer', 'panel.html')
+  hardenLocalWindow(panelWindow, panelHtml)
+  panelWindow.loadFile(panelHtml)
   panelWindow.on('resize', () => attachServiceView())
   panelWindow.on('swipe', (_event, direction) => {
     if (direction === 'right') navigate('back')
@@ -3134,8 +3198,9 @@ function createMenuWindow() {
   })
 
   menuWindow.webContents.setMaxListeners(20)
-  menuWindow.loadFile(path.join(__dirname, '..', 'renderer', 'menu.html'))
-  hardenLocalWindow(menuWindow)
+  const menuHtml = path.join(__dirname, '..', 'renderer', 'menu.html')
+  hardenLocalWindow(menuWindow, menuHtml)
+  menuWindow.loadFile(menuHtml)
   menuWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   menuWindow.on('blur', () => {
     if (!menuWindow.webContents.isDevToolsOpened()) {
@@ -3207,6 +3272,7 @@ function getSnapshot() {
     onboarded: Boolean(settings.onboarded),
     notifSetupSkipped: Boolean(settings.notifSetupSkipped),
     connections: connections.getStatus(),
+    teamsPresence: teamsPresenceState,
     connConfig: settings.connections,
     scratch: settings.scratch || '',
     settingsOpen,
@@ -3326,7 +3392,7 @@ function exportPortableSettings() {
     filters: [{ name: 'JSON', extensions: ['json'] }]
   }).then(({ canceled, filePath }) => {
     if (canceled || !filePath) return
-    fs.writeFileSync(filePath, JSON.stringify(portable, null, 2), { encoding: 'utf8', mode: 0o600 })
+    writeOwnerOnlyFile(filePath, JSON.stringify(portable, null, 2))
   }).catch((e) => console.error('[settings] export failed:', e && e.message))
 }
 
@@ -3491,6 +3557,45 @@ function repairService(serviceKey, action) {
   }
 }
 
+async function applyTeamsPresence(command) {
+  const key = typeof command.statusKey === 'string' ? command.statusKey : ''
+  const option = TEAMS_PRESENCE_OPTIONS[key]
+  if (!option) return
+  const durationKey = typeof command.durationKey === 'string' ? command.durationKey : 'default'
+  if (!Object.prototype.hasOwnProperty.call(TEAMS_PRESENCE_DURATIONS, durationKey)) return
+  setTeamsPresenceState({ status: 'applying', activeKey: key, message: `Setting ${option.label}...`, error: null })
+  try {
+    await connections.setTeamsPreferredPresence({
+      availability: option.availability,
+      activity: option.activity,
+      expirationDuration: TEAMS_PRESENCE_DURATIONS[durationKey]
+    })
+    setTeamsPresenceState({ status: 'success', activeKey: key, message: `${option.label} set`, error: null })
+  } catch (err) {
+    setTeamsPresenceState({
+      status: 'error',
+      activeKey: null,
+      message: '',
+      error: (err && err.message) || 'Teams status could not be updated.'
+    })
+  }
+}
+
+async function resetTeamsPresence() {
+  setTeamsPresenceState({ status: 'applying', activeKey: null, message: 'Resetting status...', error: null })
+  try {
+    await connections.clearTeamsPreferredPresence()
+    setTeamsPresenceState({ status: 'success', activeKey: null, message: 'Teams status reset', error: null })
+  } catch (err) {
+    setTeamsPresenceState({
+      status: 'error',
+      activeKey: null,
+      message: '',
+      error: (err && err.message) || 'Teams status could not be reset.'
+    })
+  }
+}
+
 /* ---------- IPC ---------- */
 function registerIpc() {
   ipcMain.handle('panel:get-snapshot', (event) => {
@@ -3522,7 +3627,7 @@ function registerIpc() {
         maybeNotifyTeams(state.unreadCount)
       }
     }
-    if (typeof meta.href === 'string' && isAllowedHost(meta.href)) {
+    if (typeof meta.href === 'string' && isAllowedHost(meta.href, serviceKey)) {
       state.href = meta.href
       handleMicrosoftNavigation(service, meta.href)
     }
@@ -3535,6 +3640,7 @@ function registerIpc() {
     // NOT expose sendCommand, but this check is a defense-in-depth layer against a
     // compromised or confused renderer bypassing that boundary.
     if (event.sender !== panelWindow?.webContents && event.sender !== menuWindow?.webContents) return
+    if (!command || typeof command.type !== 'string') return
     switch (command.type) {
       case 'switch-service':
         showService(command.serviceKey)
@@ -3635,9 +3741,9 @@ function registerIpc() {
             ...settings,
             collapseMode: command.settings.collapseMode || settings.collapseMode,
             taskProvider: command.settings.taskProvider || settings.taskProvider,
-            notif: command.settings.notif || settings.notif,
-            feedPrefs: command.settings.feedPrefs || settings.feedPrefs,
-            downloads: command.settings.downloads || settings.downloads,
+            notif: mergeObjectSetting(settings.notif, command.settings.notif),
+            feedPrefs: mergeObjectSetting(settings.feedPrefs, command.settings.feedPrefs),
+            downloads: mergeObjectSetting(settings.downloads, command.settings.downloads),
             services: Array.isArray(command.settings.services) ? command.settings.services : settings.services
           })
         }
@@ -3667,6 +3773,12 @@ function registerIpc() {
         break
       case 'send-test-notification':
         fireNotification({ title: 'MailStudio test', body: 'Notifications are able to display.' }, () => showPanelWindow())
+        break
+      case 'set-teams-presence':
+        applyTeamsPresence(command)
+        break
+      case 'reset-teams-presence':
+        resetTeamsPresence()
         break
       case 'repair-service':
         if (typeof command.serviceKey === 'string' && typeof command.action === 'string') {

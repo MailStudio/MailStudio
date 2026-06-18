@@ -1,7 +1,16 @@
 'use strict'
 
-const test = require('node:test')
+const { after, test } = require('node:test')
 const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
+
+const TEST_USER_DATA = path.join(__dirname, '..', 'tooling', 'qa', '.tmp-settings-store-test')
+fs.rmSync(TEST_USER_DATA, { recursive: true, force: true })
+fs.mkdirSync(TEST_USER_DATA, { recursive: true })
+after(() => {
+  fs.rmSync(TEST_USER_DATA, { recursive: true, force: true })
+})
 
 // settings-store requires electron's `app` (only used for the on-disk settings
 // path). Inject a minimal stub into the require cache so the module loads under
@@ -11,7 +20,7 @@ require.cache[electronPath] = {
   id: electronPath,
   filename: electronPath,
   loaded: true,
-  exports: { app: { getPath: () => '/tmp/mailstudio-test' } }
+  exports: { app: { getPath: () => TEST_USER_DATA } }
 }
 
 const store = require('../src/main/settings-store')
@@ -84,6 +93,18 @@ test('notification toggles default on, explicit false respected', () => {
   assert.equal(settings.notif.preview, true)
 })
 
+test('quiet hours keep only valid HH:MM values', () => {
+  const settings = store.normalize({
+    notif: {
+      quietStart: '8:05',
+      quietEnd: '24:99'
+    }
+  })
+
+  assert.equal(settings.notif.quietStart, '08:05')
+  assert.equal(settings.notif.quietEnd, '')
+})
+
 // --- URL sanitization (exercised through the public normalize() surface) ---
 
 test('custom pinned site with a dangerous protocol is dropped', () => {
@@ -124,6 +145,38 @@ test('saved service feed kinds are constrained to known feed providers', () => {
   assert.equal('feed' in settings.services.find((s) => s.key === 'fake-mail'), false)
   assert.equal('mailboxManaged' in settings.services.find((s) => s.key === 'fake-mail'), false)
   assert.equal('feed' in settings.services.find((s) => s.key === 'shared'), false)
+})
+
+test('tampered built-in service keys are canonicalized before URL pinning', () => {
+  const settings = store.normalize({
+    services: [
+      { key: ' mail ', label: 'Mail', url: 'https://phish.example/login' },
+      { key: 'calendar\u0000', label: 'Calendar', url: 'https://phish.example/calendar' }
+    ]
+  })
+
+  const mail = settings.services.find((s) => s.key === 'mail')
+  const calendar = settings.services.find((s) => s.key === 'calendar')
+  assert.equal(mail.builtin, true)
+  assert.equal(mail.url, 'https://outlook.office.com/mail/')
+  assert.equal(calendar.builtin, true)
+  assert.equal(calendar.url, 'https://outlook.office.com/calendar/')
+  assert.equal(settings.services.filter((s) => s.key === 'mail').length, 1)
+})
+
+test('custom pinned services are capped on import', () => {
+  const services = Array.from({ length: 40 }, (_v, i) => ({
+    key: `custom-${i}`,
+    label: `Custom ${i}`,
+    url: `https://example-${i}.com/`
+  }))
+  const settings = store.normalize({ services })
+  const custom = settings.services.filter((s) => !s.builtin && !s.mailboxManaged)
+
+  assert.equal(custom.length, 30)
+  for (const builtin of store.DEFAULT_SERVICES) {
+    assert.ok(settings.services.some((s) => s.key === builtin.key), `missing built-in ${builtin.key}`)
+  }
 })
 
 test('managed shared mailbox services may keep their mail feed', () => {
@@ -177,4 +230,15 @@ test('custom service key and label metadata are clamped', () => {
   assert.equal(custom.key.length, 80)
   assert.equal(custom.label.length, 80)
   assert.equal(custom.key.includes('\u0000'), false)
+})
+
+test('save tightens an existing settings file to owner-only permissions', () => {
+  const target = path.join(TEST_USER_DATA, 'mailstudio-settings.json')
+  fs.writeFileSync(target, '{}', { mode: 0o644 })
+
+  store.save({ theme: 'light' })
+
+  const mode = fs.statSync(target).mode & 0o777
+  assert.equal(mode, 0o600)
+  assert.equal(JSON.parse(fs.readFileSync(target, 'utf8')).theme, 'light')
 })

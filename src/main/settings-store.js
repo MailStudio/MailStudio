@@ -184,6 +184,7 @@ const MANAGED_MAILBOX_HOSTS = new Set([
   'outlook.office365.com',
   'outlook.live.com'
 ])
+const MAX_CUSTOM_SERVICES = 30
 
 function filePath() {
   return path.join(app.getPath('userData'), 'mailstudio-settings.json')
@@ -200,6 +201,13 @@ function isManagedMailboxUrl(value) {
   } catch {
     return false
   }
+}
+
+function cleanServiceKey(value) {
+  return (typeof value === 'string' ? value : '')
+    .replace(/[\u0000-\u001F\u007F]/g, '')
+    .trim()
+    .slice(0, 80)
 }
 
 function sanitizeService(input, builtinDefaults) {
@@ -219,16 +227,13 @@ function sanitizeService(input, builtinDefaults) {
     return null
   }
 
-  const builtin = builtinDefaults.get(input.key)
+  const cleanKey = cleanServiceKey(input.key)
+  const builtin = builtinDefaults.get(cleanKey)
   const cleanLabel = (value) =>
     String(value || '')
       .replace(/[\u200B-\u200D\u2060\uFEFF\uFFFD\uE000-\uF8FF\u25A0-\u25A1]/g, '')
       .trim()
       .slice(0, 80)
-  const cleanKey = (typeof input.key === 'string' ? input.key : '')
-    .replace(/[\u0000-\u001F\u007F]/g, '')
-    .trim()
-    .slice(0, 80)
   let home = url
   if (builtin) {
     home = builtin.home
@@ -251,7 +256,7 @@ function sanitizeService(input, builtinDefaults) {
   }
 
   return {
-    key: cleanKey || `site-${Math.abs(hash(url))}`,
+    key: builtin ? builtin.key : (cleanKey || `site-${Math.abs(hash(url))}`),
     // Built-in labels are fixed to the default (they can't be renamed in the UI),
     // so a renamed default (e.g. Office → Copilot) reaches existing users. Only
     // pinned custom sites keep a user-supplied label.
@@ -276,6 +281,17 @@ function hash(str) {
     h |= 0
   }
   return h
+}
+
+function normalizeTime(value) {
+  if (typeof value !== 'string') return ''
+  const match = value.trim().match(/^(\d{1,2}):(\d{2})$/)
+  if (!match) return ''
+  const hours = Number(match[1])
+  const minutes = Number(match[2])
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return ''
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return ''
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
 }
 
 function normalize(raw) {
@@ -323,8 +339,8 @@ function normalize(raw) {
     asana: rawNotif.asana !== false,
     teams: rawNotif.teams !== false,
     preview: rawNotif.preview !== false,
-    quietStart: typeof rawNotif.quietStart === 'string' ? rawNotif.quietStart.trim() : '',
-    quietEnd: typeof rawNotif.quietEnd === 'string' ? rawNotif.quietEnd.trim() : '',
+    quietStart: normalizeTime(rawNotif.quietStart),
+    quietEnd: normalizeTime(rawNotif.quietEnd),
     quietWeekends: Boolean(rawNotif.quietWeekends),
     quietAllowCalendar: Boolean(rawNotif.quietAllowCalendar)
   }
@@ -394,13 +410,18 @@ function normalize(raw) {
   const builtinDefaults = new Map(DEFAULT_SERVICES.map((s) => [s.key, s]))
   const seen = new Set()
   const services = []
+  let customCount = 0
 
   if (Array.isArray(raw && raw.services)) {
     for (const entry of raw.services) {
       const clean = sanitizeService(entry, builtinDefaults)
+      if (clean && !clean.builtin && customCount >= MAX_CUSTOM_SERVICES) {
+        continue
+      }
       if (clean && !seen.has(clean.key)) {
         seen.add(clean.key)
         services.push(clean)
+        if (!clean.builtin) customCount += 1
       }
     }
   }
@@ -425,6 +446,20 @@ function normalize(raw) {
   return settings
 }
 
+function writeSettingsFile(target, payload) {
+  const dir = path.dirname(target)
+  const tmp = `${target}.tmp`
+  fs.mkdirSync(dir, { recursive: true })
+  try { fs.unlinkSync(tmp) } catch { /* file may not exist */ }
+  fs.writeFileSync(tmp, payload, { encoding: 'utf8', mode: 0o600 })
+  fs.renameSync(tmp, target)
+  try {
+    fs.chmodSync(target, 0o600)
+  } catch {
+    /* ignore chmod failures on restrictive filesystems */
+  }
+}
+
 function load() {
   try {
     const raw = JSON.parse(fs.readFileSync(filePath(), 'utf8'))
@@ -437,9 +472,10 @@ function load() {
 function save(settings) {
   const normalized = normalize(settings)
   try {
-    // mode 0o600: owner read/write only — settings include OAuth client IDs and
-    // pinned intranet URLs that shouldn't be world-readable on shared systems.
-    fs.writeFileSync(filePath(), JSON.stringify(normalized, null, 2), { encoding: 'utf8', mode: 0o600 })
+    // Owner read/write only — settings include OAuth client IDs and pinned
+    // intranet URLs that shouldn't be world-readable on shared systems. Write
+    // through a temp file + rename so a crash cannot leave truncated JSON.
+    writeSettingsFile(filePath(), JSON.stringify(normalized, null, 2))
   } catch {
     // Non-fatal: settings just won't persist this session.
   }
