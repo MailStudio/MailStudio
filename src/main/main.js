@@ -72,6 +72,7 @@ const TRUSTED_BASE_DOMAINS = [
   'office365.com',
   'microsoft.com',
   'microsoftonline.com',
+  'microsoft365.com',
   'live.com',
   'cloud.microsoft',
   'sharepoint.com',
@@ -593,7 +594,9 @@ function isMicrosoftLoginHost(host) {
     host === 'login.microsoftonline.com' ||
     host === 'login.live.com' ||
     host === 'login.microsoft.com' ||
-    host.endsWith('.login.microsoftonline.com')
+    host === 'login.windows.net' ||
+    host.endsWith('.login.microsoftonline.com') ||
+    host.endsWith('.login.windows.net')
   )
 }
 
@@ -1199,6 +1202,20 @@ function safeLoadURL(webContents, url) {
   }
 }
 
+function mailboxHomeUrl(origin, mailboxEmail) {
+  const cleanOrigin = typeof origin === 'string' ? origin.replace(/\/+$/, '') : ''
+  const cleanEmail = extractEmail(mailboxEmail)
+  if (!cleanOrigin || !cleanEmail) return ''
+  return `${cleanOrigin}/mail/${encodeURIComponent(cleanEmail)}/inbox`
+}
+
+function mailboxRootUrl(origin, mailboxEmail) {
+  const cleanOrigin = typeof origin === 'string' ? origin.replace(/\/+$/, '') : ''
+  const cleanEmail = extractEmail(mailboxEmail)
+  if (!cleanOrigin || !cleanEmail) return ''
+  return `${cleanOrigin}/mail/${encodeURIComponent(cleanEmail)}/`
+}
+
 function goServiceHome(serviceKey) {
   const service = findService(serviceKey)
   const webContents = serviceViews.get(serviceKey)?.webContents
@@ -1223,7 +1240,10 @@ function ensureServiceLoaded(key) {
   const view = serviceViews.get(key)
   const service = findService(key)
   if (view && service && !view.webContents.isDestroyed()) {
-    safeLoadURL(view.webContents, service.url)
+    // Managed mailbox tabs keep a broad /mail/<mailbox>/ root URL for routing,
+    // but first load should land on the focused Inbox home, not the wider OWA
+    // shell. The primary Mail tab stays unrestricted and still loads /mail/.
+    safeLoadURL(view.webContents, service.mailboxManaged ? (service.home || service.url) : service.url)
     loadedServiceKeys.add(key)
   }
 }
@@ -1953,6 +1973,7 @@ function createServiceView(service) {
         isMicrosoftLoginHost(popupHost) ||
         popupHost === 'login.microsoft.com' ||
         popupHost.endsWith('.microsoftonline.com') ||
+        popupHost === 'login.windows.net' ||
         popupHost === 'login.live.com' ||
         popupHost.endsWith('.b2clogin.com')
       )
@@ -2190,12 +2211,16 @@ function syncDiscoveredMailboxes(mailboxes, discoveredPrimaryEmail = '') {
   for (const mb of extra) {
     const key = mailboxServiceKey(mb.id)
     const label = cleanMailboxLabel(mb.label)
-    const url = safeMailboxUrl(mb.url)
-    if (!url || isPrimaryMailboxUrl(url)) continue
+    const discoveredUrl = safeMailboxUrl(mb.url)
+    if (!discoveredUrl || isPrimaryMailboxUrl(discoveredUrl)) continue
     // Drop the discovered root that is the primary account itself.
-    const mbEmail = extractEmail(mb.id) || extractEmail(label) || extractEmail(url)
+    const mbEmail = extractEmail(mb.id) || extractEmail(label) || extractEmail(discoveredUrl)
     if (mb.primaryAccount || (mbEmail && primaryEmails.has(mbEmail))) continue
-    const home = safeMailboxUrl(mb.home) || url
+    const origin = (() => {
+      try { return new URL(discoveredUrl).origin } catch { return '' }
+    })()
+    const url = mailboxRootUrl(origin, mbEmail) || discoveredUrl
+    const home = mailboxHomeUrl(origin, mbEmail) || safeMailboxUrl(mb.home) || discoveredUrl
     candidates.push({ key, label, url, home })
   }
   const discoveredKeys = new Set(candidates.map((candidate) => candidate.key))

@@ -270,6 +270,13 @@ test('OAuth redirect cancellation does not race loadURL rejection', () => {
   assert.match(OAUTH_JS, /authWindow\.loadURL\(authUrl\.toString\(\)\)\.catch\(\(e\) => \{[\s\S]*if \(sawRedirect\) return[\s\S]*finish\(reject, e\)/)
 })
 
+test('Microsoft suite auth keeps legacy and new login hosts inside the shared session', () => {
+  assert.match(MAIN_JS, /'microsoft365\.com'/)
+  assert.match(MAIN_JS, /host === 'login\.windows\.net'/)
+  assert.match(MAIN_JS, /host\.endsWith\('\.login\.windows\.net'\)/)
+  assert.match(MAIN_JS, /popupHost === 'login\.windows\.net'/)
+})
+
 test('generic Microsoft 365 URLs no longer forward clicks to the Copilot tab', () => {
   assert.match(MAIN_JS, /const appMatch = route\.match\(\/\\\/launch\\\/\(word\|excel\|powerpoint\|onenote\|onedrive\|sharepoint\)\/i\)/)
   assert.match(MAIN_JS, /if \(appMatch\) return findOrReveal\(appMatch\[1\]\.toLowerCase\(\)\)/)
@@ -487,7 +494,7 @@ test('discovered primary Outlook folder URLs are not duplicated as managed mailb
   assert.ok(block, 'syncDiscoveredMailboxes missing')
   assert.match(block[1], /const isPrimaryMailboxUrl = \(value\) =>/)
   assert.match(block[1], /const candidates = \[\]/)
-  assert.match(block[1], /if \(!url \|\| isPrimaryMailboxUrl\(url\)\) continue/)
+  assert.match(block[1], /if \(!discoveredUrl \|\| isPrimaryMailboxUrl\(discoveredUrl\)\) continue/)
   assert.match(block[1], /const discoveredKeys = new Set\(candidates\.map/)
   assert.match(block[1], /\['inbox', 'deeplink', 'id', 'sentitems', 'drafts', 'archive', 'deleteditems', 'junkemail'\]/)
 })
@@ -587,7 +594,24 @@ test('discovered mailbox URLs are pinned to the primary Outlook origin', () => {
   assert.match(block[1], /parsed\.protocol !== 'https:'/)
   assert.match(block[1], /parsed\.hostname\.toLowerCase\(\) !== mailHost/)
   // A mailbox whose URL fails validation is dropped, not persisted.
-  assert.match(block[1], /const url = safeMailboxUrl\(mb\.url\)\n\s*if \(!url \|\| isPrimaryMailboxUrl\(url\)\) continue/)
+  assert.match(block[1], /const discoveredUrl = safeMailboxUrl\(mb\.url\)/)
+  assert.match(block[1], /if \(!discoveredUrl \|\| isPrimaryMailboxUrl\(discoveredUrl\)\) continue/)
+})
+
+test('managed mailbox tabs keep broad mailbox routing but canonicalize home to inbox', () => {
+  assert.match(MAIN_JS, /function mailboxHomeUrl\(origin, mailboxEmail\)/)
+  assert.match(MAIN_JS, /function mailboxRootUrl\(origin, mailboxEmail\)/)
+  const block = MAIN_JS.match(/function syncDiscoveredMailboxes\(mailboxes, discoveredPrimaryEmail = ''\) \{([\s\S]*?)\n\}/)
+  assert.ok(block, 'syncDiscoveredMailboxes missing')
+  assert.match(block[1], /const origin = \(\(\) => \{/)
+  assert.match(block[1], /const url = mailboxRootUrl\(origin, mbEmail\) \|\| discoveredUrl/)
+  assert.match(block[1], /const home = mailboxHomeUrl\(origin, mbEmail\) \|\| safeMailboxUrl\(mb\.home\) \|\| discoveredUrl/)
+})
+
+test('managed mailbox first load prefers its inbox home over the broader mailbox root', () => {
+  const block = MAIN_JS.match(/function ensureServiceLoaded\(key\) \{([\s\S]*?)\n\}/)
+  assert.ok(block, 'ensureServiceLoaded missing')
+  assert.match(block[1], /service\.mailboxManaged \? \(service\.home \|\| service\.url\) : service\.url/)
 })
 
 test('shared mailbox scrape results are accepted even when the primary Graph mail feed is live', () => {
