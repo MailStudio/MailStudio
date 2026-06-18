@@ -112,8 +112,8 @@ const DEFAULT_SERVICES = [
   {
     key: 'planner',
     label: 'Planner',
-    url: 'https://planner.microsoft.com/',
-    home: 'https://planner.microsoft.com/',
+    url: 'https://planner.cloud.microsoft/',
+    home: 'https://planner.cloud.microsoft/',
     icon: 'planner',
     builtin: true,
     visible: false
@@ -179,6 +179,11 @@ const DEFAULTS = {
 }
 
 const VALID_MANAGED_FEEDS = new Set(['mail'])
+const MANAGED_MAILBOX_HOSTS = new Set([
+  'outlook.office.com',
+  'outlook.office365.com',
+  'outlook.live.com'
+])
 
 function filePath() {
   return path.join(app.getPath('userData'), 'mailstudio-settings.json')
@@ -186,6 +191,15 @@ function filePath() {
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value))
+}
+
+function isManagedMailboxUrl(value) {
+  try {
+    const host = new URL(value).hostname.toLowerCase()
+    return MANAGED_MAILBOX_HOSTS.has(host) || host.endsWith('.outlook.office.com') || host.endsWith('.outlook.office365.com')
+  } catch {
+    return false
+  }
 }
 
 function sanitizeService(input, builtinDefaults) {
@@ -210,8 +224,34 @@ function sanitizeService(input, builtinDefaults) {
     String(value || '')
       .replace(/[\u200B-\u200D\u2060\uFEFF\uFFFD\uE000-\uF8FF\u25A0-\u25A1]/g, '')
       .trim()
+      .slice(0, 80)
+  const cleanKey = (typeof input.key === 'string' ? input.key : '')
+    .replace(/[\u0000-\u001F\u007F]/g, '')
+    .trim()
+    .slice(0, 80)
+  let home = url
+  if (builtin) {
+    home = builtin.home
+  } else {
+    try {
+      const h = new URL(input.home || input.url)
+      if (h.protocol === 'http:' || h.protocol === 'https:') home = h.toString()
+    } catch {
+      home = url
+    }
+  }
+  const managedMailbox = Boolean(
+    !builtin &&
+    input.mailboxManaged &&
+    VALID_MANAGED_FEEDS.has(input.feed) &&
+    isManagedMailboxUrl(url)
+  )
+  if (managedMailbox && !isManagedMailboxUrl(home)) {
+    home = url
+  }
+
   return {
-    key: typeof input.key === 'string' && input.key ? input.key : `site-${Math.abs(hash(url))}`,
+    key: cleanKey || `site-${Math.abs(hash(url))}`,
     // Built-in labels are fixed to the default (they can't be renamed in the UI),
     // so a renamed default (e.g. Office → Copilot) reaches existing users. Only
     // pinned custom sites keep a user-supplied label.
@@ -220,21 +260,12 @@ function sanitizeService(input, builtinDefaults) {
     // Pinning them to the hardcoded defaults prevents a tampered settings file
     // (or a compromised renderer) from redirecting the Mail tab to a phishing domain.
     url: builtin ? builtin.url : url,
-    home: builtin ? builtin.home : (() => {
-      try {
-        const h = new URL(input.home || input.url)
-        if (h.protocol !== 'http:' && h.protocol !== 'https:') return url
-        return h.toString()
-      } catch {
-        return url
-      }
-    })(),
+    home,
     icon: builtin ? builtin.icon : (input.icon === 'mail' ? 'mail' : 'link'),
     builtin: Boolean(builtin),
     visible: input.visible !== false,
     ...(builtin && builtin.feed ? { feed: builtin.feed } : {}),
-    ...(!builtin && input.mailboxManaged && VALID_MANAGED_FEEDS.has(input.feed) ? { feed: input.feed } : {}),
-    ...(input.mailboxManaged ? { mailboxManaged: true } : {})
+    ...(managedMailbox ? { feed: input.feed, mailboxManaged: true } : {})
   }
 }
 

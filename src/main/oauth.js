@@ -1,5 +1,5 @@
 const crypto = require('crypto')
-const { BrowserWindow, session } = require('electron')
+const { BrowserWindow } = require('electron')
 
 // Generic OAuth2 Authorization-Code-with-PKCE engine for desktop. Microsoft is a
 // public client: PKCE replaces the client secret entirely, so none is used. Asana
@@ -173,6 +173,7 @@ function authorize({ provider, clientId, clientSecret, tenant, partition, parent
     })
 
     let settled = false
+    let sawRedirect = false
     const finish = (fn, arg) => {
       if (settled) return
       settled = true
@@ -201,6 +202,7 @@ function authorize({ provider, clientId, clientSecret, tenant, partition, parent
         parsed.host !== redirectUrl.host ||
         parsed.pathname !== redirectUrl.pathname
       ) return
+      sawRedirect = true
       event.preventDefault()
       const err = parsed.searchParams.get('error')
       if (err === 'access_denied') {
@@ -237,7 +239,13 @@ function authorize({ provider, clientId, clientSecret, tenant, partition, parent
       }
     })
 
-    authWindow.loadURL(authUrl.toString()).catch((e) => finish(reject, e))
+    authWindow.loadURL(authUrl.toString()).catch((e) => {
+      // We intentionally prevent the OAuth redirect from loading after reading
+      // the code. Electron can reject the original loadURL promise as ERR_FAILED
+      // for that cancelled navigation; let the redirect handler finish instead.
+      if (sawRedirect) return
+      finish(reject, e)
+    })
 
     // Safety net: if ready-to-show is slow to fire (some MS pages defer it),
     // force the window visible so it can never get stuck hidden behind the app.

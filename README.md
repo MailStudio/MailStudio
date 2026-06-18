@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/MailStudio/MailStudio/releases/latest"><img src="https://img.shields.io/badge/download-latest-0f6cbd?style=flat-square" alt="Download latest"></a>
-  <img src="https://img.shields.io/badge/version-1.2.2-1b2128?style=flat-square" alt="Version 1.2.2">
+  <img src="https://img.shields.io/badge/version-0.3.0-1b2128?style=flat-square" alt="Version 0.3.0">
   <img src="https://img.shields.io/badge/platform-macOS%20·%20Windows%20·%20Linux-1b2128?style=flat-square" alt="Platforms">
   <img src="https://img.shields.io/badge/scopes-read--only-34c759?style=flat-square" alt="Read-only scopes">
   <img src="https://img.shields.io/badge/license-MIT-1b2128?style=flat-square" alt="MIT License">
@@ -30,10 +30,10 @@ sidebar feeds. No browser-tab sprawl. No context switching. One Microsoft sign-i
 
 | Platform | File |
 |---|---|
-| macOS (Apple Silicon) | `MailStudio-1.2.2-arm64.dmg` |
-| Windows | `MailStudio-Setup-1.2.2.exe` |
-| Linux (AppImage) | `MailStudio-1.2.2.AppImage` |
-| Linux (Debian/Ubuntu) | `mailstudio_1.2.2_amd64.deb` |
+| macOS (Apple Silicon) | `MailStudio-0.3.0-arm64.dmg` |
+| Windows | `MailStudio-Setup-0.3.0.exe` |
+| Linux (AppImage) | `MailStudio-0.3.0.AppImage` |
+| Linux (Debian/Ubuntu) | `mailstudio_0.3.0_amd64.deb` |
 
 ---
 

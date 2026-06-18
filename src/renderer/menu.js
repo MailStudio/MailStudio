@@ -46,7 +46,7 @@ function renderStatus(mailService) {
     statusIcon.innerHTML = MAIL_GLYPH
     statusNum.textContent = 'Not signed in'
     statusText.textContent = 'Sign in to see your inbox'
-  } else if (state === 'error') {
+  } else if (feedStates.includes('error') || state === 'error') {
     statusIcon.className = 'm-status-icon'
     statusIcon.innerHTML = MAIL_GLYPH
     statusNum.textContent = 'Unavailable'

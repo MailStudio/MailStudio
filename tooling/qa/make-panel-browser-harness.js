@@ -61,8 +61,8 @@ const snapshot = {
         kind: 'mail',
         state: 'ok',
         items: [
-          { id: 'm1', sender: 'A', subject: 'One', preview: 'P', today: true },
-          { id: 'm2', sender: 'B', subject: 'Two', preview: 'Q', today: true }
+          { id: 'm1', sender: 'A', subject: 'One', preview: 'P', today: true, isRead: false },
+          { id: 'm2', sender: 'B', subject: 'Two', preview: 'Q', today: true, isRead: true }
         ]
       }
     },
@@ -81,9 +81,9 @@ const snapshot = {
         kind: 'mail',
         state: 'ok',
         items: [
-          { id: 's1', sender: 'C', subject: 'Three', preview: 'R', today: true },
-          { id: 's2', sender: 'D', subject: 'Four', preview: 'S', today: true },
-          { id: 'old', sender: 'E', subject: 'Old', preview: 'T', today: false }
+          { id: 's1', sender: 'C', subject: 'Three', preview: 'R', today: true, isRead: false },
+          { id: 's2', sender: 'D', subject: 'Four', preview: 'S', today: true, isRead: false },
+          { id: 'old', sender: 'E', subject: 'Old', preview: 'T', today: false, isRead: false }
         ]
       }
     },

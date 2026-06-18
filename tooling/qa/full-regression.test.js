@@ -9,7 +9,10 @@ const ROOT = path.resolve(__dirname, '..', '..')
 const MAIN_JS = fs.readFileSync(path.join(ROOT, 'src', 'main', 'main.js'), 'utf8')
 const PANEL_JS = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'panel.js'), 'utf8')
 const PANEL_HTML = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'panel.html'), 'utf8')
+const API_FEEDS_JS = fs.readFileSync(path.join(ROOT, 'src', 'main', 'api-feeds.js'), 'utf8')
+const SETTINGS_STORE_JS = fs.readFileSync(path.join(ROOT, 'src', 'main', 'settings-store.js'), 'utf8')
 const CONNECTIONS_JS = fs.readFileSync(path.join(ROOT, 'src', 'main', 'connections.js'), 'utf8')
+const OAUTH_JS = fs.readFileSync(path.join(ROOT, 'src', 'main', 'oauth.js'), 'utf8')
 const MENU_JS = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'menu.js'), 'utf8')
 const UPDATER_JS = fs.readFileSync(path.join(ROOT, 'src', 'main', 'updater.js'), 'utf8')
 const BUILD_SH = fs.readFileSync(path.join(ROOT, 'build.sh'), 'utf8')
@@ -133,6 +136,13 @@ test('fetchMail shapes Outlook-owned deep links for inbox items', async () => {
   })
 })
 
+test('mail sidebar sources fetch only the latest 10 messages', () => {
+  assert.match(API_FEEDS_JS, /\$top=10&\$orderby=receivedDateTime desc/)
+  const block = MAIN_JS.match(/const MAIL_SCRAPE = `\(\(\) => \{([\s\S]*?)\n\}\)\(\)`/)
+  assert.ok(block, 'MAIL_SCRAPE missing')
+  assert.match(block[1], /if \(items\.length >= 10\) break/)
+})
+
 test('fetchAsanaTasks preserves a per-task permalink for every API item', async () => {
   await withMockedFetch(async () => mockJsonResponse(200, {
     data: [
@@ -173,6 +183,50 @@ test('main feed click handler resolves clicked items by stable id before row fal
   assert.match(MAIN_JS, /stringOrNull\(recentItem && recentItem\.taskUrl\)/)
 })
 
+test('mail feed item opens prefer Graph webLink over constructed deep links', () => {
+  const block = MAIN_JS.match(/const itemUrl = feedKind === 'mail'([\s\S]*?)if \(recentItem\)/)
+  assert.ok(block, 'feed item URL selection missing')
+  assert.match(block[1], /stringOrNull\(command\.webLink\)[\s\S]*stringOrNull\(command\.deepLink\)/)
+  assert.match(block[1], /stringOrNull\(recentItem && recentItem\.webLink\)[\s\S]*stringOrNull\(recentItem && recentItem\.deepLink\)/)
+})
+
+test('scraped Outlook mail rows are opened, not only selected', () => {
+  const mailClickBlock = MAIN_JS.match(/if \(feedKind === 'mail' && typeof command\.rowIdx === 'number'\) \{([\s\S]*?)\n\s*\} else if \(feedKind === 'calendar'/)
+  assert.ok(mailClickBlock, 'mail feed click fallback missing')
+  assert.match(mailClickBlock[1], /MouseEvent\('dblclick'/)
+  assert.match(mailClickBlock[1], /KeyboardEvent\('keydown', \{ key: 'Enter'/)
+  assert.match(mailClickBlock[1], /\[data-convid\]/)
+})
+
+test('Asana scraper requires task signals and filters metadata chips', () => {
+  const block = MAIN_JS.match(/const ASANA_SCRAPE = `\(\(\) => \{([\s\S]*?)\n\}\)\(\)`/)
+  assert.ok(block, 'ASANA_SCRAPE missing')
+  assert.match(block[1], /const looksLikeMetadata = \(text\) =>/)
+  assert.match(block[1], /const cleanTaskName = \(text\) =>/)
+  assert.match(block[1], /\.replace\(\/\^\(modal\|dialog\)\\\\s\+\/i, ''\)/)
+  assert.match(block[1], /taskSignal\(row\)/)
+  assert.match(block[1], /if \(!row \|\| seenRows\.has\(row\) \|\| !taskSignal\(row\)\) continue/)
+  assert.match(block[1], /\^due date/i)
+  assert.doesNotMatch(block[1], /if \(!rows\.length\) rows = Array\.from\(document\.querySelectorAll\('\[role="row"\]'\)\)/)
+})
+
+test('Asana feed names are normalized before caching or rendering', () => {
+  assert.match(MAIN_JS, /function cleanAsanaTaskName\(value\)/)
+  assert.match(MAIN_JS, /\.replace\(\/\^\(modal\|dialog\)\\s\+\/i, ''\)/)
+  assert.match(MAIN_JS, /function normalizeFeedResult\(feed, result\)/)
+  assert.match(MAIN_JS, /if \(feed\.kind !== 'asana'\) return result/)
+  assert.match(MAIN_JS, /name: cleanAsanaTaskName\(item\.name\)/)
+  const applyBlock = MAIN_JS.match(/function applyFeedResult\(key, feed, result, \{ trusted = false \} = \{\}\) \{([\s\S]*?)\n\}/)
+  assert.ok(applyBlock, 'applyFeedResult missing')
+  assert.match(applyBlock[1], /result = normalizeFeedResult\(feed, result\)/)
+})
+
+test('OAuth redirect cancellation does not race loadURL rejection', () => {
+  assert.match(OAUTH_JS, /let sawRedirect = false/)
+  assert.match(OAUTH_JS, /sawRedirect = true[\s\S]*event\.preventDefault\(\)/)
+  assert.match(OAUTH_JS, /authWindow\.loadURL\(authUrl\.toString\(\)\)\.catch\(\(e\) => \{[\s\S]*if \(sawRedirect\) return[\s\S]*finish\(reject, e\)/)
+})
+
 test('generic Microsoft 365 URLs no longer forward clicks to the Copilot tab', () => {
   assert.match(MAIN_JS, /const appMatch = route\.match\(\/\\\/launch\\\/\(word\|excel\|powerpoint\|onenote\|onedrive\|sharepoint\)\/i\)/)
   assert.match(MAIN_JS, /if \(appMatch\) return findOrReveal\(appMatch\[1\]\.toLowerCase\(\)\)/)
@@ -197,6 +251,15 @@ test('mail notification baselines are tracked per service key', () => {
 test('mail notifications require a newly identified message, not just count churn', () => {
   assert.match(MAIN_JS, /if \(newItems\.length === 0\) \{[\s\S]*?return[\s\S]*?\}/)
   assert.ok(!MAIN_JS.includes('New email in ${serviceLabel}.'))
+})
+
+test('mail notification baselines treat inbox zero and suppressed mail as seen', () => {
+  const block = MAIN_JS.match(/function diffAndNotifyMail\(items, unreadCount, serviceKey = 'mail'\) \{([\s\S]*?)\nfunction maybeNotifyTeams/)
+  assert.ok(block, 'diffAndNotifyMail missing')
+  assert.match(block[1], /if \(unreadCount === 0\) \{[\s\S]*state\.ready = true/)
+  assert.match(MAIN_JS, /function markMailItemsSeen\(state, items\)/)
+  assert.match(block[1], /const suppress = \(message\) => \{[\s\S]*markMailItemsSeen\(state, items\)/)
+  assert.match(block[1], /activeServiceKey === serviceKey\) \{ suppress\(\); return \}/)
 })
 
 test('settings pages declared in HTML match PAGE_TITLES entries in the renderer', () => {
@@ -278,6 +341,48 @@ test('shared mailbox views are kept resident (never hibernated)', () => {
   assert.match(block[1], /feed\.kind === 'mail' && service && service\.mailboxManaged/)
 })
 
+test('shared Outlook mailboxes participate in Microsoft SSO instead of isolated custom sessions', () => {
+  const isMicrosoftBlock = MAIN_JS.match(/function isMicrosoftService\(service\) \{([\s\S]*?)\n\}/)
+  assert.ok(isMicrosoftBlock, 'isMicrosoftService missing')
+  assert.match(isMicrosoftBlock[1], /isMailboxService\(service\)/)
+
+  const partitionBlock = MAIN_JS.match(/function partitionFor\(service\) \{([\s\S]*?)\n\}/)
+  assert.ok(partitionBlock, 'partitionFor missing')
+  assert.match(partitionBlock[1], /if \(isMailboxService\(service\)\) return MICROSOFT_SESSION_PARTITION/)
+  assert.match(partitionBlock[1], /if \(!service\.builtin\) return `persist:mailstudio-site-\$\{service\.key\}`/)
+})
+
+test('Outlook mailbox URLs prefer the matching managed mailbox before primary Mail', () => {
+  const block = MAIN_JS.match(/function coreServiceForUrl\(urlString\) \{([\s\S]*?)\nfunction resolveServiceByUrl/)
+  assert.ok(block, 'coreServiceForUrl missing')
+  assert.match(block[1], /const mailbox = settings\.services\.find/)
+  assert.match(block[1], /isMailboxService\(service\)/)
+  assert.match(block[1], /targetSameOriginAndPathPrefix\(parsed, current\)/)
+  assert.match(block[1], /if \(mailbox\) return mailbox/)
+  assert.match(block[1], /return find\('mail'\)/)
+  assert.match(MAIN_JS, /function targetSameOriginAndPathPrefix\(target, current\)/)
+})
+
+test('discovered primary Outlook folder URLs are not duplicated as managed mailboxes', () => {
+  const block = MAIN_JS.match(/function syncDiscoveredMailboxes\(mailboxes, discoveredPrimaryEmail = ''\) \{([\s\S]*?)\n\}/)
+  assert.ok(block, 'syncDiscoveredMailboxes missing')
+  assert.match(block[1], /const isPrimaryMailboxUrl = \(value\) =>/)
+  assert.match(block[1], /const candidates = \[\]/)
+  assert.match(block[1], /if \(!url \|\| isPrimaryMailboxUrl\(url\)\) continue/)
+  assert.match(block[1], /const discoveredKeys = new Set\(candidates\.map/)
+  assert.match(block[1], /\['inbox', 'deeplink', 'id', 'sentitems', 'drafts', 'archive', 'deleteditems', 'junkemail'\]/)
+})
+
+test('generic Microsoft 365 home redirects cannot be claimed by the Copilot tab fallback', () => {
+  assert.match(MAIN_JS, /function isMicrosoft365HomeHost\(host\)/)
+  const coreBlock = MAIN_JS.match(/function coreServiceForUrl\(urlString\) \{([\s\S]*?)\nfunction resolveServiceByUrl/)
+  assert.ok(coreBlock, 'coreServiceForUrl missing')
+  assert.match(coreBlock[1], /if \(isMicrosoft365HomeHost\(host\)\) \{[\s\S]*return null/)
+  const resolveBlock = MAIN_JS.match(/function resolveServiceByUrl\(urlString\) \{([\s\S]*?)\n\}/)
+  assert.ok(resolveBlock, 'resolveServiceByUrl missing')
+  assert.match(resolveBlock[1], /if \(isMicrosoft365HomeHost\(target\.hostname\)\) return null/)
+})
+
 test('tray/dock badge sums unread across every mail feed', () => {
   const block = MAIN_JS.match(/function mailUnread\(\) \{([\s\S]*?)\n\}/)
   assert.ok(block, 'mailUnread missing')
@@ -336,30 +441,207 @@ test('notification toggles are disabled while their provider is disconnected', (
   assert.match(PANEL_JS, /if \(btn\.disabled\) return/)
 })
 
+test('restored API connections arm notifications before snapshots', () => {
+  assert.match(MAIN_JS, /function hasConnectedApiProvider\(\)/)
+  assert.match(MAIN_JS, /\['microsoft', 'asana'\]\.some/)
+  assert.match(MAIN_JS, /function armNotificationsForConnectedProviders\(\)/)
+  assert.match(MAIN_JS, /store\.save\(\{ \.\.\.settings, onboarded: true, notifSetupSkipped: false \}\)/)
+  const pushBlock = MAIN_JS.match(/function pushSnapshot\(\) \{([\s\S]*?)\n  const snapshot = getSnapshot\(\)/)
+  assert.ok(pushBlock, 'pushSnapshot missing')
+  assert.match(pushBlock[1], /armNotificationsForConnectedProviders\(\)/)
+})
+
+test('provider connect buttons disable immediately and main ignores duplicate connects', () => {
+  assert.match(PANEL_JS, /action\.disabled = true/)
+  assert.match(PANEL_JS, /action\.textContent = 'Connecting\.\.\.'/)
+  const connectBlock = MAIN_JS.match(/case 'connect-provider':([\s\S]*?)case 'disconnect-provider':/)
+  assert.ok(connectBlock, 'connect-provider handler missing')
+  assert.match(connectBlock[1], /const connStatus = connections\.getStatus\(\)\[command\.provider\]/)
+  assert.match(connectBlock[1], /connStatus\.status === 'connecting'/)
+  assert.match(connectBlock[1], /command\.provider === 'asana'[\s\S]*activeServiceKey = 'asana'/)
+})
+
 test('discovered mailbox URLs are pinned to the primary Outlook origin', () => {
-  const block = MAIN_JS.match(/function syncDiscoveredMailboxes\(mailboxes\) \{([\s\S]*?)\n\}/)
+  const block = MAIN_JS.match(/function syncDiscoveredMailboxes\(mailboxes, discoveredPrimaryEmail = ''\) \{([\s\S]*?)\n\}/)
   assert.ok(block, 'syncDiscoveredMailboxes missing')
   assert.match(block[1], /const safeMailboxUrl = \(value\) =>/)
   assert.match(block[1], /parsed\.protocol !== 'https:'/)
   assert.match(block[1], /parsed\.hostname\.toLowerCase\(\) !== mailHost/)
   // A mailbox whose URL fails validation is dropped, not persisted.
-  assert.match(block[1], /const url = safeMailboxUrl\(mb\.url\)\n\s*if \(!url\) continue/)
+  assert.match(block[1], /const url = safeMailboxUrl\(mb\.url\)\n\s*if \(!url \|\| isPrimaryMailboxUrl\(url\)\) continue/)
 })
 
 test('shared mailbox scrape results are accepted even when the primary Graph mail feed is live', () => {
   const block = MAIN_JS.match(/function refreshFeed\(key\) \{([\s\S]*?)\n\}/)
   assert.ok(block, 'refreshFeed missing')
+  assert.match(MAIN_JS, /function apiOwnsFeed\(key\)/)
   assert.match(
     block[1],
-    /connections\.feedIsLive\(feed\.kind\) && !\(feed\.kind === 'mail' && service && service\.mailboxManaged\)/
+    /if \(apiOwnsFeed\(key\)\)/
   )
+  const ownerBlock = MAIN_JS.match(/function apiOwnsFeed\(key\) \{([\s\S]*?)\n\}/)
+  assert.ok(ownerBlock, 'apiOwnsFeed missing')
+  assert.match(ownerBlock[1], /connections\.feedIsLive\(feed\.kind\)/)
+  assert.match(ownerBlock[1], /!\(feed\.kind === 'mail' && service && service\.mailboxManaged\)/)
+  const refreshFeedsBlock = MAIN_JS.match(/function refreshFeeds\(\) \{([\s\S]*?)\nfunction refreshApiFeedsNow/)
+  assert.ok(refreshFeedsBlock, 'refreshFeeds missing')
+  assert.match(refreshFeedsBlock[1], /if \(apiOwnsFeed\(key\)\)/)
+  assert.doesNotMatch(refreshFeedsBlock[1], /connections\.feedIsLive\(kind\)/)
+})
+
+test('shared mailbox scrape unread count uses unread rows, not all recent rows', () => {
+  const block = MAIN_JS.match(/if \(feed\.kind === 'mail'\) \{([\s\S]*?)diffAndNotifyMail\(feed\.items, visibleUnread, key\)/)
+  assert.ok(block, 'scraped mail branch missing')
+  assert.match(block[1], /const scrapedUnread = feed\.items\.filter\(\(item\) => item && item\.isRead === false\)\.length/)
+  assert.match(block[1], /mailState\.unreadCount = visibleUnread/)
+  assert.match(block[1], /changed = true/)
+})
+
+test('API-backed feeds refresh immediately on startup and connection changes', () => {
+  assert.match(MAIN_JS, /function refreshApiFeedsNow\(\) \{[\s\S]*?if \(apiOwnsFeed\(key\)\) refreshFeed\(key\)/)
+  const timerBlock = MAIN_JS.match(/function startFeedTimer\(\) \{([\s\S]*?)\n\}/)
+  assert.ok(timerBlock, 'startFeedTimer missing')
+  assert.match(timerBlock[1], /refreshApiFeedsNow\(\)/)
+  const initBlock = MAIN_JS.match(/connections\.init\(\{([\s\S]*?)\n\s*\}\)/)
+  assert.ok(initBlock, 'connections init missing')
+  assert.match(initBlock[1], /onChange: \(\) => \{[\s\S]*refreshApiFeedsNow\(\)[\s\S]*pushSnapshot\(\)/)
+  const connectBlock = MAIN_JS.match(/case 'connect-provider':([\s\S]*?)case 'disconnect-provider':/)
+  assert.ok(connectBlock, 'connect-provider handler missing')
+  assert.match(connectBlock[1], /resetProviderFeeds\(command\.provider\)[\s\S]*refreshApiFeedsNow\(\)/)
+  const applyBlock = MAIN_JS.match(/function applySettings\(next\) \{([\s\S]*?)\n\}/)
+  assert.ok(applyBlock, 'applySettings missing')
+  assert.match(applyBlock[1], /setTimeout\(refreshApiFeedsNow, 250\)/)
+})
+
+test('scrape-owned mail refreshes promptly without requiring a click', () => {
+  assert.match(MAIN_JS, /const HIDDEN_MAIL_SCRAPE_MS = 12000/)
+  const finishBlock = MAIN_JS.match(/view\.webContents\.on\('did-finish-load', \(\) => \{([\s\S]*?)\n  \}\)/)
+  assert.ok(finishBlock, 'did-finish-load handler missing')
+  assert.match(finishBlock[1], /refreshFeed\(service\.key\)/)
+  assert.match(finishBlock[1], /setTimeout\(\(\) => refreshFeed\(service\.key\), 1000\)/)
+  const feedsBlock = MAIN_JS.match(/function refreshFeeds\(\) \{([\s\S]*?)\nfunction refreshApiFeedsNow/)
+  assert.ok(feedsBlock, 'refreshFeeds missing')
+  assert.match(feedsBlock[1], /const hiddenGap = serviceFeeds\[key\]\.kind === 'mail' \? HIDDEN_MAIL_SCRAPE_MS : HIDDEN_SCRAPE_MS/)
+})
+
+test('new scrape-owned inboxes are prewarmed after settings changes', () => {
+  const prewarmBlock = MAIN_JS.match(/function prewarmLiveScrapeViews\(\) \{([\s\S]*?)\n\}/)
+  assert.ok(prewarmBlock, 'prewarmLiveScrapeViews missing')
+  assert.match(prewarmBlock[1], /needsLiveView\(service\.key\)/)
+  assert.match(prewarmBlock[1], /enqueuePrewarm\(keys\)/)
+  const applyBlock = MAIN_JS.match(/function applySettings\(next\) \{([\s\S]*?)\n\}/)
+  assert.ok(applyBlock, 'applySettings missing')
+  assert.match(applyBlock[1], /syncServiceViews\(\)[\s\S]*prewarmLiveScrapeViews\(\)/)
+})
+
+test('the Copilot tab is preserved as a hidden built-in service', () => {
+  const fresh = store.normalize(null)
+  const office = fresh.services.find((s) => s.key === 'office')
+  assert.ok(office, 'Copilot/office tab missing from defaults')
+  assert.equal(office.label, 'Copilot')
+  assert.equal(office.visible, false)
+})
+
+test('Office app tabs may use the Microsoft 365 launcher but core tabs may not drift there', () => {
+  assert.match(MAIN_JS, /function isMicrosoft365HomeUrl\(urlString\)/)
+  assert.match(MAIN_JS, /const MICROSOFT_365_LAUNCHER_KEYS = new Set/)
+  assert.match(MAIN_JS, /function canUseMicrosoft365Launcher\(service\)/)
+  // Direct navigations and server redirects are cancelled for Mail/Calendar/Teams
+  // style tabs, but Word/Excel/PowerPoint/etc. can pass through the launcher.
+  const navBlock = MAIN_JS.match(/const handleNavRequest = \(event, url\) => \{([\s\S]*?)\n  \}/)
+  assert.ok(navBlock, 'handleNavRequest missing')
+  assert.match(navBlock[1], /if \(!canUseMicrosoft365Launcher\(service\) && isMicrosoft365HomeUrl\(url\)\) \{\s*event\.preventDefault\(\)\s*return/)
+  // New-window/pop-up requests from core tabs are denied.
+  assert.match(MAIN_JS, /if \(!canUseMicrosoft365Launcher\(service\) && isMicrosoft365HomeUrl\(url\)\) \{\s*return \{ action: 'deny' \}/)
+  // Explicit Copilot-home clicks route to the Copilot tab, never the active view.
+  const openBlock = MAIN_JS.match(/function openLinkInApp\(url\) \{([\s\S]*?)\n\}/)
+  assert.ok(openBlock, 'openLinkInApp missing')
+  assert.match(openBlock[1], /const office = findService\('office'\)\s*\n\s*if \(office\) routeToService\(office, url\)/)
+})
+
+test('Planner default uses the current cloud Microsoft host', () => {
+  const fresh = store.normalize(null)
+  const planner = fresh.services.find((s) => s.key === 'planner')
+  assert.ok(planner, 'Planner tab missing from defaults')
+  assert.equal(planner.url, 'https://planner.cloud.microsoft/')
+  assert.equal(planner.home, 'https://planner.cloud.microsoft/')
+  assert.doesNotMatch(SETTINGS_STORE_JS, /https:\/\/planner\.microsoft\.com\//)
+})
+
+test('the signed-in mailbox address is captured so it can be de-duplicated from shared mailboxes', () => {
+  const block = CONNECTIONS_JS.match(/async function loadAccount\(provider, tokenSet\) \{([\s\S]*?)\n\}/)
+  assert.ok(block, 'loadAccount missing')
+  assert.match(block[1], /userPrincipalName/)
+  assert.match(block[1], /email: email \|\| null/)
+})
+
+test('the primary account is not duplicated as a shared mailbox tab', () => {
+  const block = MAIN_JS.match(/function syncDiscoveredMailboxes\(mailboxes, discoveredPrimaryEmail = ''\) \{([\s\S]*?)\n\}/)
+  assert.ok(block, 'syncDiscoveredMailboxes missing')
+  assert.match(MAIN_JS, /function syncDiscoveredMailboxes\(mailboxes, discoveredPrimaryEmail = ''\)/)
+  assert.match(MAIN_JS, /function extractEmail\(value\)/)
+  assert.match(MAIN_JS, /function connectedMicrosoftEmail\(\)/)
+  assert.match(block[1], /const primaryEmails = new Set\(\)/)
+  assert.match(block[1], /connectedMicrosoftEmail\(\), discoveredPrimaryEmail/)
+  assert.match(block[1], /extractEmail\(candidateEmail\)/)
+  assert.match(block[1], /if \(mb\.primaryAccount \|\| \(mbEmail && primaryEmails\.has\(mbEmail\)\)\) continue/)
+  assert.match(MAIN_JS, /syncDiscoveredMailboxes\(result\.mailboxes, result\.primaryEmail\)/)
+})
+
+test('the built-in Mail row displays the signed-in primary mailbox identity', () => {
+  assert.match(MAIN_JS, /let discoveredPrimaryMailEmail = ''/)
+  assert.match(MAIN_JS, /function rememberDiscoveredPrimaryMailEmail\(value\)/)
+  assert.match(MAIN_JS, /function primaryMailDisplayLabel\(\)/)
+  assert.match(MAIN_JS, /function serviceDisplayLabel\(service\)/)
+  assert.match(MAIN_JS, /if \(service\.key === 'mail'\) return primaryMailDisplayLabel\(\) \|\| service\.label/)
+
+  const syncBlock = MAIN_JS.match(/function syncDiscoveredMailboxes\(mailboxes, discoveredPrimaryEmail = ''\) \{([\s\S]*?)\n\}/)
+  assert.ok(syncBlock, 'syncDiscoveredMailboxes missing')
+  assert.match(syncBlock[1], /const primaryIdentityChanged = rememberDiscoveredPrimaryMailEmail\(discoveredPrimaryEmail\)/)
+  assert.match(syncBlock[1], /else if \(primaryIdentityChanged\) pushSnapshot\(\)/)
+
+  const snapshotBlock = MAIN_JS.match(/function getSnapshot\(\) \{([\s\S]*?)\nfunction hasConnectedApiProvider/)
+  assert.ok(snapshotBlock, 'getSnapshot missing')
+  assert.match(snapshotBlock[1], /const label = serviceDisplayLabel\(service\)/)
+  assert.match(snapshotBlock[1], /label,/)
+  assert.match(snapshotBlock[1], /title: state\.title \|\| label/)
+
+  const pushBlock = MAIN_JS.match(/function pushSnapshot\(\) \{([\s\S]*?)\nfunction serviceKeyForWebContents/)
+  assert.ok(pushBlock, 'pushSnapshot missing')
+  assert.match(pushBlock[1], /const svcLabel = serviceDisplayLabel\(svc\)/)
+  assert.match(pushBlock[1], /\$\{svcLabel\}/)
+})
+
+test('Outlook mailbox discovery marks the profile account as primary', () => {
+  const block = MAIN_JS.match(/const MAILBOX_DISCOVER = `\(\(\) => \{([\s\S]*?)\n\}\)\(\)`/)
+  assert.ok(block, 'MAILBOX_DISCOVER missing')
+  assert.match(block[1], /let primaryEmail = ''/)
+  assert.match(block[1], /O365_MainLink_Me/)
+  assert.match(block[1], /\[aria-label\*="Account manager" i\]/)
+  assert.match(block[1], /const allTreeItems = Array\.from\(document\.querySelectorAll\('\[role="treeitem"\]'\)\)/)
+  assert.match(block[1], /selected && currentRootEmail && .*inbox/)
+  assert.match(block[1], /primaryEmail = currentRootEmail/)
+  assert.match(block[1], /encodeURIComponent\(fallbackEmail\) \+ '\/inbox'/)
+  assert.match(block[1], /primaryAccount: Boolean\(options\.primaryAccount\)/)
+  assert.match(block[1], /primaryAccount: primaryEmail && email === primaryEmail/)
+  assert.match(block[1], /return \{ mailboxes, primaryEmail \}/)
 })
 
 test('summary strip accumulates unread mail across every visible mail feed', () => {
   const block = PANEL_JS.match(/function renderSummary\(snapshot\) \{([\s\S]*?)\n\}/)
   assert.ok(block, 'renderSummary missing')
   assert.match(block[1], /mail \+= \(service\.feed\.items \|\| \[\]\)\.filter/)
+  assert.match(block[1], /item\.isRead === false/)
   assert.doesNotMatch(block[1], /mail = \(service\.feed\.items \|\| \[\]\)\.filter/)
+})
+
+test('renderer settings round-trip preserves managed mailbox metadata', () => {
+  assert.match(MAIN_JS, /mailboxManaged: Boolean\(service\.mailboxManaged\)/)
+  const workingBlock = PANEL_JS.match(/function workingServices\(\) \{([\s\S]*?)\n\}/)
+  assert.ok(workingBlock, 'workingServices missing')
+  assert.match(workingBlock[1], /icon: s\.icon/)
+  assert.match(workingBlock[1], /mailboxManaged: Boolean\(s\.mailboxManaged\)/)
+  assert.match(workingBlock[1], /feed: s\.feed \? s\.feed\.kind : undefined/)
 })
 
 test('service preload page metadata is handled by main and sender-scoped to BrowserViews', () => {
@@ -374,6 +656,7 @@ test('tray dropdown status sums unread across every mail service', () => {
   const statusBlock = MENU_JS.match(/function renderStatus\(mailService\) \{([\s\S]*?)\n\}/)
   assert.ok(statusBlock, 'renderStatus missing')
   assert.match(statusBlock[1], /reduce\(\(total, service\) => total \+ \(Number\(service\.unreadCount\) \|\| 0\), 0\)/)
+  assert.match(statusBlock[1], /feedStates\.includes\('error'\)/)
   const renderBlock = MENU_JS.match(/function render\(snapshot\) \{([\s\S]*?)\n\}/)
   assert.ok(renderBlock, 'render missing')
   assert.match(renderBlock[1], /snapshot\.services\.filter\(\(service\) => service\.feed && service\.feed\.kind === 'mail'\)/)
@@ -385,6 +668,12 @@ test('home and external-open commands tolerate missing active service state', ()
   assert.match(MAIN_JS, /safeLoadURL\(webContents, service\.home \|\| service\.url\)/)
   assert.match(MAIN_JS, /openExternalSafe\(activeServiceHref\(\)\)/)
   assert.doesNotMatch(MAIN_JS, /openExternalSafe\(serviceState\[activeServiceKey\]\.href\)/)
+})
+
+test('panel BrowserWindow listener cap covers repeated OAuth child windows', () => {
+  const block = MAIN_JS.match(/function createPanelWindow\(\) \{([\s\S]*?)\n  panelWindow\.webContents\.setMaxListeners\(20\)/)
+  assert.ok(block, 'createPanelWindow listener setup missing')
+  assert.match(block[1], /panelWindow\.setMaxListeners\(30\)/)
 })
 
 test('build wrapper does not invoke macOS GUI tooling unless explicitly requested', () => {

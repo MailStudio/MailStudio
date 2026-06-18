@@ -1,6 +1,6 @@
 {
   "name": "mailstudio",
-  "version": "1.2.3",
+  "version": "0.3.0",
   "description": "Secure Outlook web wrapper with tray notifications, calendar, tasks, and Asana.",
   "main": "src/main/main.js",
   "scripts": {

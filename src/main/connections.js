@@ -205,7 +205,12 @@ async function loadAccount(provider, tokenSet) {
       })
       if (res.ok) {
         const json = await res.json()
-        return { name: json.displayName || json.userPrincipalName || 'Microsoft' }
+        // userPrincipalName is the signed-in mailbox address. We keep it so the
+        // mailbox-discovery scrape can tell the primary account apart from the
+        // shared mailboxes it sits beside in the OWA folder tree (otherwise the
+        // primary's own email-labeled root gets re-added as a duplicate tab).
+        const email = typeof json.userPrincipalName === 'string' ? json.userPrincipalName.trim().toLowerCase() : ''
+        return { name: json.displayName || json.userPrincipalName || 'Microsoft', email: email || null }
       }
     }
   } catch {

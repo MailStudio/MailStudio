@@ -114,7 +114,7 @@ test('saved service feed kinds are constrained to known feed providers', () => {
     services: [
       { key: 'mail', url: 'https://evil.example', feed: 'asana' },
       { key: 'docs', label: 'Docs', url: 'https://example.com/wiki', feed: 'javascript:alert(1)' },
-      { key: 'fake-mail', label: 'Fake Mail', url: 'https://example.com/mail', feed: 'mail' },
+      { key: 'fake-mail', label: 'Fake Mail', url: 'https://example.com/mail', feed: 'mail', mailboxManaged: true },
       { key: 'shared', label: 'Shared', url: 'https://outlook.office.com/mail/shared/', feed: 'mail' }
     ]
   })
@@ -122,6 +122,7 @@ test('saved service feed kinds are constrained to known feed providers', () => {
   assert.equal(settings.services.find((s) => s.key === 'mail').feed, 'mail')
   assert.equal('feed' in settings.services.find((s) => s.key === 'docs'), false)
   assert.equal('feed' in settings.services.find((s) => s.key === 'fake-mail'), false)
+  assert.equal('mailboxManaged' in settings.services.find((s) => s.key === 'fake-mail'), false)
   assert.equal('feed' in settings.services.find((s) => s.key === 'shared'), false)
 })
 
@@ -140,4 +141,40 @@ test('managed shared mailbox services may keep their mail feed', () => {
 
   assert.equal(settings.services.find((s) => s.key === 'shared').feed, 'mail')
   assert.equal(settings.services.find((s) => s.key === 'shared').mailboxManaged, true)
+})
+
+test('managed shared mailbox services cannot route home outside Outlook', () => {
+  const settings = store.normalize({
+    services: [
+      {
+        key: 'shared',
+        label: 'Shared',
+        url: 'https://outlook.office.com/mail/shared/',
+        home: 'https://example.com/phish',
+        feed: 'mail',
+        mailboxManaged: true
+      }
+    ]
+  })
+  const shared = settings.services.find((s) => s.key === 'shared')
+
+  assert.equal(shared.mailboxManaged, true)
+  assert.equal(shared.home, shared.url)
+})
+
+test('custom service key and label metadata are clamped', () => {
+  const settings = store.normalize({
+    services: [
+      {
+        key: `\u0000${'k'.repeat(120)}`,
+        label: 'l'.repeat(120),
+        url: 'https://example.com/wiki'
+      }
+    ]
+  })
+  const custom = settings.services.find((s) => s.url === 'https://example.com/wiki')
+
+  assert.equal(custom.key.length, 80)
+  assert.equal(custom.label.length, 80)
+  assert.equal(custom.key.includes('\u0000'), false)
 })

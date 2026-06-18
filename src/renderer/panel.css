@@ -12,8 +12,8 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #000000;
-  --chrome: #000000;
+  --bg: rgba(0, 0, 0, 0.85);
+  --chrome: rgba(0, 0, 0, 0.85);
   --bg-elevated: #212121;
   --bg-soft: #212121;
   --text: #e9ebee;
@@ -29,8 +29,8 @@
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg: #f4f5f7;
-  --chrome: #fbfbfc;
+  --bg: rgba(244, 245, 247, 0.85);
+  --chrome: rgba(251, 251, 252, 0.85);
   --bg-elevated: #ffffff;
   --text: #1b1e23;
   --muted: #5c636e;
@@ -52,7 +52,7 @@ body {
   margin: 0;
   height: 100vh;
   overflow: hidden;
-  background: var(--bg);
+  background: transparent;
   color: var(--text);
   font-family: -apple-system, "SF Pro Text", "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -71,6 +71,8 @@ body {
   justify-content: space-between;
   padding: 0 10px 0 88px;
   background: var(--chrome);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
   border-bottom: 1px solid var(--line);
   -webkit-app-region: drag;
   z-index: 5;
@@ -170,6 +172,8 @@ body.collapsed:not(.settings-open) .collapse .icon {
   display: flex;
   flex-direction: column;
   background: var(--bg);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
   border-right: 1px solid var(--line);
   transition: width 0.22s var(--ease);
   overflow: hidden;
@@ -422,12 +426,26 @@ body.collapsed.mode-vanish:not(.settings-open) .sidebar {
 .feed-event.feed-item,
 .feed-task.feed-item {
   cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  transition: background 0.2s cubic-bezier(0.4, 0, 0.2, 1), transform 0.1s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.feed-mail.feed-item:active,
+.feed-event.feed-item:active,
+.feed-task.feed-item:active {
+  transform: scale(0.98);
 }
 
 .feed-mail.feed-item:hover,
 .feed-event.feed-item:hover,
 .feed-task.feed-item:hover {
   background: var(--hover);
+}
+
+/* Premium gradient hover for unread mail */
+.feed-mail.feed-item:not(.feed-mail-read):hover {
+  background: linear-gradient(135deg, var(--hover) 0%, rgba(15, 108, 189, 0.05) 100%);
 }
 
 .feed-item:focus-visible {
@@ -437,20 +455,36 @@ body.collapsed.mode-vanish:not(.settings-open) .sidebar {
 }
 
 .feed-mail .feed-sender {
-  font-size: 12px;
-  font-weight: 650;
+  font-size: 12.5px;
+  font-weight: 700;
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
 .feed-mail .feed-subject {
   font-size: 11.5px;
-  color: var(--muted);
+  font-weight: 600;
+  color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  margin-top: 2px;
+}
+
+/* Styling for read emails to make unread stand out more */
+.feed-mail-read .feed-sender {
+  font-weight: 500;
+  color: var(--muted);
+}
+.feed-mail-read .feed-subject {
+  font-weight: 400;
+  color: var(--muted-dim);
+}
+.feed-mail-read .feed-preview {
+  opacity: 0.7;
 }
 
 .feed-task .feed-task-name {

@@ -41,6 +41,7 @@ const PREWARM_SETTLE_MS = 5000         // gap between staggered prewarm loads
 const PREWARM_TIMEOUT_MS = 20000       // give up on a stalled load, move to next
 const MICROSOFT_REFRESH_COOLDOWN_MS = 45000 // avoid reload loops after SSO redirects
 const HIDDEN_SCRAPE_MS = 50000         // min gap between scrapes of a hidden view
+const HIDDEN_MAIL_SCRAPE_MS = 12000    // mail notifications should feel live even off-screen
 const HIBERNATE_IDLE_MS = 15 * 60 * 1000 // idle time before an eligible view sleeps
 const REAPER_MS = 60000                // hibernation sweep interval
 const REPO_URL = 'https://github.com/MailStudio/MailStudio'
@@ -90,7 +91,8 @@ function openExternalSafe(target) {
   try {
     const protocol = new URL(target).protocol
     if (protocol === 'http:' || protocol === 'https:' || protocol === 'mailto:') {
-      shell.openExternal(target)
+      const pending = shell.openExternal(target)
+      if (pending && typeof pending.catch === 'function') pending.catch(() => {})
     }
   } catch {
     /* ignore malformed URLs */
@@ -268,9 +270,10 @@ function getDiagnostics() {
     globalSnoozed: isGlobalSnoozed(),
     services: settings.services.map((service) => {
       const feed = serviceFeeds[service.key]
+      const label = serviceDisplayLabel(service)
       return {
         key: service.key,
-        label: service.label,
+        label,
         visible: service.visible,
         loaded: loadedServiceKeys.has(service.key),
         hibernated: !serviceViews.has(service.key),
@@ -278,7 +281,7 @@ function getDiagnostics() {
         feedKind: feed ? feed.kind : '',
         feedState: feed ? feed.state : '',
         feedItems: feed && Array.isArray(feed.items) ? feed.items.length : 0,
-        source: feed ? (connections.isConnected(connections.providerForFeed(feed.kind)) ? 'api' : 'scraper') : ''
+        source: feed ? (apiOwnsFeed(service.key) ? 'api' : 'scraper') : ''
       }
     }),
     connections: conn,
@@ -322,6 +325,38 @@ function visibleServices() {
 
 function findService(key) {
   return settings.services.find((service) => service.key === key)
+}
+
+let discoveredPrimaryMailEmail = ''
+
+function extractEmail(value) {
+  return (String(value || '').match(/[\w.+-]+@[\w.-]+/) || [''])[0].toLowerCase()
+}
+
+function connectedMicrosoftEmail() {
+  try {
+    const status = connections.getStatus()
+    return extractEmail(status && status.microsoft && status.microsoft.account && status.microsoft.account.email)
+  } catch {
+    return ''
+  }
+}
+
+function rememberDiscoveredPrimaryMailEmail(value) {
+  const clean = extractEmail(value)
+  if (!clean || clean === discoveredPrimaryMailEmail) return false
+  discoveredPrimaryMailEmail = clean
+  return true
+}
+
+function primaryMailDisplayLabel() {
+  return connectedMicrosoftEmail() || discoveredPrimaryMailEmail || ''
+}
+
+function serviceDisplayLabel(service) {
+  if (!service) return ''
+  if (service.key === 'mail') return primaryMailDisplayLabel() || service.label
+  return service.label
 }
 
 function ensureServiceState(service) {
@@ -480,11 +515,11 @@ function compose(kind) {
       .executeJavaScript(script, true)
       .then((ok) => {
         if (!ok && COMPOSE_DEEPLINK[target]) {
-          view.webContents.loadURL(COMPOSE_DEEPLINK[target])
+          safeLoadURL(view.webContents, COMPOSE_DEEPLINK[target])
         }
       })
       .catch(() => {
-        if (COMPOSE_DEEPLINK[target]) view.webContents.loadURL(COMPOSE_DEEPLINK[target])
+        if (COMPOSE_DEEPLINK[target]) safeLoadURL(view.webContents, COMPOSE_DEEPLINK[target])
       })
   }, 250)
 }
@@ -507,8 +542,12 @@ function isMicrosoftLoginHost(host) {
   )
 }
 
+function isMailboxService(service) {
+  return Boolean(service && service.mailboxManaged)
+}
+
 function isMicrosoftService(service) {
-  return Boolean(service && service.builtin && service.key !== 'asana')
+  return Boolean(service && ((service.builtin && service.key !== 'asana') || isMailboxService(service)))
 }
 
 function isMicrosoftAppHost(host) {
@@ -703,6 +742,13 @@ function startPrewarmQueue() {
   enqueuePrewarm([...essential, ...rest])
 }
 
+function prewarmLiveScrapeViews() {
+  const keys = visibleServices()
+    .filter((service) => !loadedServiceKeys.has(service.key) && needsLiveView(service.key))
+    .map((service) => service.key)
+  enqueuePrewarm(keys)
+}
+
 // Hibernate views that are off-screen, idle past the threshold, and safe to
 // sleep (API-backed feed or no feed). Frees a slot, then lets any deferred
 // prewarm proceed.
@@ -754,6 +800,11 @@ function fireNotification(opts, onClick) {
   n.show()
 }
 
+function markMailItemsSeen(state, items) {
+  for (const item of items) { if (item.id) state.notifiedIds.add(item.id) }
+  capBaselineSet(state.notifiedIds)
+}
+
 function mailNotifyState(serviceKey) {
   if (!mailNotificationState.has(serviceKey)) {
     mailNotificationState.set(serviceKey, { notifiedIds: new Set(), ready: false, lastCount: 0 })
@@ -768,14 +819,16 @@ function diffAndNotifyMail(items, unreadCount, serviceKey = 'mail') {
   if (unreadCount === 0) {
     state.notifiedIds.clear()
     state.lastCount = 0
-    state.ready = false
+    // A known-zero inbox is a valid baseline. If the next poll rises to 1, that
+    // message is new and should notify; resetting to "not ready" would silently
+    // swallow the first new mail after inbox zero.
+    state.ready = true
     return
   }
 
   if (!state.ready) {
     // First scrape after launch: mark all current emails as seen without notifying.
-    for (const item of items) { if (item.id) state.notifiedIds.add(item.id) }
-    capBaselineSet(state.notifiedIds)
+    markMailItemsSeen(state, items)
     state.lastCount = unreadCount
     state.ready = true
     return
@@ -786,19 +839,21 @@ function diffAndNotifyMail(items, unreadCount, serviceKey = 'mail') {
   state.lastCount = unreadCount
 
   if (!countWentUp) return
+  const newItems = items.filter((item) => item.id && !state.notifiedIds.has(item.id) && item.isRead === false)
+  const suppress = (message) => {
+    if (message) console.warn(message)
+    markMailItemsSeen(state, items)
+  }
   // From here on a new email arrived and we WOULD notify — log any gate that
   // suppresses it, so "notifications aren't working" has a visible reason.
-  if (!settings.onboarded) { console.warn('[notify] mail suppressed: not onboarded (connect an account / finish setup)'); return }
-  if (!notif.mail) { console.warn('[notify] mail suppressed: Mail notifications toggled off in Settings'); return }
-  if (isQuietHours()) { console.warn('[notify] mail suppressed: quiet hours active'); return }
-  if (isSnoozed(serviceKey)) { console.warn(`[notify] mail suppressed: ${serviceLabel} is snoozed`); return }
-  if (panelWindow && panelWindow.isFocused() && activeServiceKey === serviceKey) return
-
-  const newItems = items.filter((item) => item.id && !state.notifiedIds.has(item.id))
+  if (!settings.onboarded) { suppress('[notify] mail suppressed: not onboarded (connect an account / finish setup)'); return }
+  if (!notif.mail) { suppress('[notify] mail suppressed: Mail notifications toggled off in Settings'); return }
+  if (isQuietHours()) { suppress('[notify] mail suppressed: quiet hours active'); return }
+  if (isSnoozed(serviceKey)) { suppress(`[notify] mail suppressed: ${serviceLabel} is snoozed`); return }
+  if (panelWindow && panelWindow.isFocused() && activeServiceKey === serviceKey) { suppress(); return }
 
   // Mark all visible emails as seen to prevent re-notification next cycle.
-  for (const item of items) { if (item.id) state.notifiedIds.add(item.id) }
-  capBaselineSet(state.notifiedIds)
+  markMailItemsSeen(state, items)
 
   if (newItems.length === 0) {
     // Unread counts can rise from sync churn, mailbox discovery, or messages
@@ -853,7 +908,16 @@ function maybeNotifyTeams(unreadCount) {
   // Teams is a SPA whose title transiently drops the "(N)" prefix during
   // in-app navigation, parsing as 0 — never rebase the baseline downward on a
   // 0 reading or every flap re-notifies the same backlog.
-  if (unreadCount === 0) return
+  if (unreadCount === 0) {
+    // Exception: when the user is actively looking at Teams, a zero title is a
+    // good signal that they cleared/read the backlog. Rebase so the next real
+    // message after inbox-zero still notifies.
+    if (panelWindow && panelWindow.isFocused() && activeServiceKey === 'teams') {
+      teamsNotifReady = true
+      lastTeamsNotificationCount = 0
+    }
+    return
+  }
   if (!teamsNotifReady) {
     // First real count after launch establishes the baseline silently.
     teamsNotifReady = true
@@ -993,6 +1057,16 @@ function resetProviderFeeds(provider) {
   }
 }
 
+function apiOwnsFeed(key) {
+  const feed = serviceFeeds[key]
+  if (!feed || !connections.feedIsLive(feed.kind)) return false
+  const service = findService(key)
+  // Shared/discovered Outlook mailboxes are scrape-only: the Microsoft Graph
+  // /me inbox covers only the primary mailbox, so API ownership here would
+  // duplicate primary mail and suppress the mailbox's own first population.
+  return !(feed.kind === 'mail' && service && service.mailboxManaged)
+}
+
 function sidebarWidth() {
   // Settings live inside the sidebar, so it must be full width while open
   // (regardless of the collapse state) — and the web view stays visible.
@@ -1059,13 +1133,15 @@ function goHome() {
 // settings store has already sanitized. Main-process loadURL() bypasses the
 // will-navigate allowlist on service views, so we validate here too.
 function safeLoadURL(webContents, url) {
+  if (!webContents || webContents.isDestroyed()) return
   try {
     const { protocol } = new URL(url)
     if (protocol !== 'http:' && protocol !== 'https:') return
+    const pending = webContents.loadURL(url)
+    if (pending && typeof pending.catch === 'function') pending.catch(() => {})
   } catch {
-    return
+    /* ignore malformed URLs or destroyed contents */
   }
-  webContents.loadURL(url)
 }
 
 function goServiceHome(serviceKey) {
@@ -1129,7 +1205,7 @@ function loadInServiceView(view, serviceKey, url) {
   }
   try {
     loadedServiceKeys.add(serviceKey)
-    view.webContents.loadURL(url)
+    safeLoadURL(view.webContents, url)
   } catch {
     /* ignore */
   }
@@ -1165,7 +1241,19 @@ function coreServiceForUrl(urlString) {
     host.endsWith('.outlook.com')
 
   if (isOutlookHost && /\/calendar/i.test(route)) return find('calendar')
-  if (isOutlookHost) return find('mail') // /mail, /owa, deep links — Mail owns the rest
+  if (isOutlookHost) {
+    const mailbox = settings.services.find((service) => {
+      if (!service.visible || !isMailboxService(service)) return false
+      try {
+        const current = new URL(service.url)
+        return targetSameOriginAndPathPrefix(parsed, current)
+      } catch {
+        return false
+      }
+    })
+    if (mailbox) return mailbox
+    return find('mail') // /mail, /owa, deep links — Mail owns the rest
+  }
   if (host === 'to-do.office.com' || host === 'to-do.microsoft.com' || host.endsWith('.todo.microsoft.com')) {
     return find('todo')
   }
@@ -1200,13 +1288,7 @@ function coreServiceForUrl(urlString) {
   // office.com / Microsoft 365 home: only explicit /launch/<app> deep links
   // belong to another tab. Generic Microsoft 365/Copilot launcher URLs should
   // stay in the app that produced them instead of hijacking the active service.
-  if (
-    host === 'office.com' ||
-    host === 'www.office.com' ||
-    host === 'm365.cloud.microsoft' ||
-    host === 'microsoft365.com' ||
-    host === 'www.microsoft365.com'
-  ) {
+  if (isMicrosoft365HomeHost(host)) {
     const appMatch = route.match(/\/launch\/(word|excel|powerpoint|onenote|onedrive|sharepoint)/i)
     if (appMatch) return findOrReveal(appMatch[1].toLowerCase())
     return null
@@ -1225,16 +1307,64 @@ function resolveServiceByUrl(urlString) {
   // Fall back to host + path-prefix match (covers custom pinned sites).
   try {
     const target = new URL(urlString)
+    // Generic Microsoft 365/Copilot home redirects are common SSO waypoints.
+    // Do not let the broad Copilot service URL claim them from Mail/Calendar/etc.
+    if (isMicrosoft365HomeHost(target.hostname)) return null
     return (
       settings.services.find((service) => {
         if (!service.visible) return false
         const current = new URL(service.url)
-        return target.hostname === current.hostname && target.pathname.startsWith(current.pathname)
+        return targetSameOriginAndPathPrefix(target, current)
       }) || null
     )
   } catch {
     return null
   }
+}
+
+function isMicrosoft365HomeHost(host) {
+  return (
+    host === 'office.com' ||
+    host === 'www.office.com' ||
+    host === 'm365.cloud.microsoft' ||
+    host === 'microsoft365.com' ||
+    host === 'www.microsoft365.com'
+  )
+}
+
+const MICROSOFT_365_LAUNCHER_KEYS = new Set([
+  'office',
+  'word',
+  'excel',
+  'powerpoint',
+  'onenote',
+  'onedrive',
+  'sharepoint',
+  'planner'
+])
+
+function canUseMicrosoft365Launcher(service) {
+  return Boolean(service && MICROSOFT_365_LAUNCHER_KEYS.has(service.key))
+}
+
+// The Microsoft 365 / Copilot home is an SSO-and-launcher waypoint, never a
+// destination a service tab should land on. It shares the trusted cloud.microsoft
+// origin, so without an explicit block a Mail/Calendar redirect through it would
+// be allowed in-place and silently hijack the tab to the Copilot home page.
+function isMicrosoft365HomeUrl(urlString) {
+  try {
+    return isMicrosoft365HomeHost(new URL(urlString).hostname)
+  } catch {
+    return false
+  }
+}
+
+function targetSameOriginAndPathPrefix(target, current) {
+  return (
+    target.protocol === current.protocol &&
+    target.hostname === current.hostname &&
+    target.pathname.startsWith(current.pathname)
+  )
 }
 
 // Silently move to the tab that owns this URL and, for core-suite tabs, load
@@ -1276,6 +1406,13 @@ function routeToService(targetService, url) {
 // other trusted Microsoft/Asana page loads in the active tab (loadInServiceView
 // re-checks the allowlist); everything else goes to the default browser.
 function openLinkInApp(url) {
+  // Copilot home links belong to the Copilot tab — reveal/route there rather
+  // than loading M365 home into whatever view is currently active.
+  if (isMicrosoft365HomeUrl(url)) {
+    const office = findService('office')
+    if (office) routeToService(office, url)
+    return
+  }
   const internalService = resolveServiceByUrl(url)
   addRecentItem({
     kind: internalService ? 'routed-link' : 'external-link',
@@ -1416,10 +1553,12 @@ function buildAppMenu() {
 }
 
 // Microsoft services share one session so SSO carries across Outlook, Teams,
-// Calendar, To Do, and Office. Asana is connected in the product, but it does
-// not need Microsoft cookies, so it gets its own built-in partition. Each
-// custom pinned site gets its own partition as well.
+// Calendar, To Do, Office, and discovered/shared Outlook mailboxes. Asana is
+// connected in the product, but it does not need Microsoft cookies, so it gets
+// its own built-in partition. Each non-mailbox custom pinned site gets its own
+// partition as well.
 function partitionFor(service) {
+  if (isMailboxService(service)) return MICROSOFT_SESSION_PARTITION
   if (!service.builtin) return `persist:mailstudio-site-${service.key}`
   if (service.key === 'asana') return ASANA_SESSION_PARTITION
   return MICROSOFT_SESSION_PARTITION
@@ -1776,6 +1915,12 @@ function createServiceView(service) {
         }
       }
     }
+    // Deny M365 / Copilot home pop-ups raised from non-suite tabs — they're SSO
+    // launcher waypoints, not a destination worth spawning a window for. Office
+    // app tabs are allowed through because Word/Excel/etc. bootstrap via them.
+    if (!canUseMicrosoft365Launcher(service) && isMicrosoft365HomeUrl(url)) {
+      return { action: 'deny' }
+    }
     // A popup/new-window link that belongs to a tab: open it there.
     // Cross-app navigation into Teams requires explicit user confirmation.
     const internalService = resolveServiceByUrl(url)
@@ -1807,6 +1952,12 @@ function createServiceView(service) {
   // a redirect from an allowed host to teams.microsoft.com would slip past the
   // will-navigate guard and land in Teams without a confirmation dialog.
   const handleNavRequest = (event, url) => {
+    // Office app tabs bootstrap through the Microsoft 365 launcher, but Mail,
+    // Calendar, Teams, etc. must never drift onto it and turn into Copilot/home.
+    if (!canUseMicrosoft365Launcher(service) && isMicrosoft365HomeUrl(url)) {
+      event.preventDefault()
+      return
+    }
     const internalService = resolveServiceByUrl(url)
     if (internalService) {
       if (internalService.key !== service.key) {
@@ -1885,6 +2036,8 @@ function createServiceView(service) {
     if (serviceFeeds[service.key]) {
       // First scrape attempt — OWA/Asana render asynchronously so a short delay
       // is needed before the email rows/task cards exist in the DOM.
+      refreshFeed(service.key)
+      setTimeout(() => refreshFeed(service.key), 1000)
       setTimeout(() => refreshFeed(service.key), 2500)
       // Second attempt for slow connections or heavy pages; if the first already
       // populated the cache this is a no-op (cache rule: good data wins).
@@ -1930,10 +2083,17 @@ function mailboxServiceKey(mailboxId) {
   return `mail-${Math.abs(h)}`
 }
 
-function syncDiscoveredMailboxes(mailboxes) {
-  if (!Array.isArray(mailboxes) || !mailboxes.length || !findService('mail')) return
+function syncDiscoveredMailboxes(mailboxes, discoveredPrimaryEmail = '') {
+  const primaryIdentityChanged = rememberDiscoveredPrimaryMailEmail(discoveredPrimaryEmail)
+  if (!Array.isArray(mailboxes) || !findService('mail')) {
+    if (primaryIdentityChanged) pushSnapshot()
+    return
+  }
+  if (!mailboxes.length) {
+    if (primaryIdentityChanged) pushSnapshot()
+    return
+  }
   const extra = mailboxes.filter((mb) => mb && mb.id !== 'primary')
-  const discoveredKeys = new Set(extra.map((mb) => mailboxServiceKey(mb.id)))
   let changed = false
   const cleanMailboxLabel = (value) =>
     String(value || 'Mail')
@@ -1953,6 +2113,35 @@ function syncDiscoveredMailboxes(mailboxes) {
     if (parsed.hostname.toLowerCase() !== mailHost) return null
     return parsed.toString()
   }
+  const isPrimaryMailboxUrl = (value) => {
+    let parsed
+    try { parsed = new URL(value) } catch { return false }
+    const segments = parsed.pathname.split('/').filter(Boolean).map((part) => decodeURIComponent(part).toLowerCase())
+    if (segments[0] !== 'mail') return false
+    const owner = segments[1] || ''
+    return !owner || ['inbox', 'deeplink', 'id', 'sentitems', 'drafts', 'archive', 'deleteditems', 'junkemail'].includes(owner)
+  }
+  // The signed-in account renders as its own email-labeled root in the OWA
+  // folder tree, right alongside the shared mailboxes. Without this its email
+  // matches the scrape and the primary inbox gets duplicated as a managed tab.
+  const primaryEmails = new Set()
+  for (const candidateEmail of [connectedMicrosoftEmail(), discoveredPrimaryEmail]) {
+    const clean = extractEmail(candidateEmail)
+    if (clean) primaryEmails.add(clean)
+  }
+  const candidates = []
+  for (const mb of extra) {
+    const key = mailboxServiceKey(mb.id)
+    const label = cleanMailboxLabel(mb.label)
+    const url = safeMailboxUrl(mb.url)
+    if (!url || isPrimaryMailboxUrl(url)) continue
+    // Drop the discovered root that is the primary account itself.
+    const mbEmail = extractEmail(mb.id) || extractEmail(label) || extractEmail(url)
+    if (mb.primaryAccount || (mbEmail && primaryEmails.has(mbEmail))) continue
+    const home = safeMailboxUrl(mb.home) || url
+    candidates.push({ key, label, url, home })
+  }
+  const discoveredKeys = new Set(candidates.map((candidate) => candidate.key))
   const services = settings.services.filter((service) => {
     if (!service.mailboxManaged) return true
     if (discoveredKeys.has(service.key)) return true
@@ -1961,27 +2150,22 @@ function syncDiscoveredMailboxes(mailboxes) {
   })
   const mailIndex = services.findIndex((s) => s.key === 'mail')
   let insertAt = mailIndex === -1 ? services.length : mailIndex + 1
-  for (const mb of extra) {
-    const key = mailboxServiceKey(mb.id)
-    const label = cleanMailboxLabel(mb.label)
-    const url = safeMailboxUrl(mb.url)
-    if (!url) continue
-    const home = safeMailboxUrl(mb.home) || url
-    const existing = services.find((s) => s.key === key)
+  for (const candidate of candidates) {
+    const existing = services.find((s) => s.key === candidate.key)
     if (existing) {
-      if (existing.label !== label || existing.url !== url || existing.home !== home) {
-        existing.label = label
-        existing.url = url
-        existing.home = home
+      if (existing.label !== candidate.label || existing.url !== candidate.url || existing.home !== candidate.home) {
+        existing.label = candidate.label
+        existing.url = candidate.url
+        existing.home = candidate.home
         changed = true
       }
       continue
     }
     services.splice(insertAt, 0, {
-      key,
-      label,
-      url,
-      home,
+      key: candidate.key,
+      label: candidate.label,
+      url: candidate.url,
+      home: candidate.home,
       icon: 'mail',
       builtin: false,
       visible: true,
@@ -1992,6 +2176,7 @@ function syncDiscoveredMailboxes(mailboxes) {
     changed = true
   }
   if (changed) applySettings({ ...settings, services })
+  else if (primaryIdentityChanged) pushSnapshot()
 }
 
 function discoverMailboxes() {
@@ -2007,7 +2192,7 @@ function discoverMailboxes() {
   view.webContents
     .executeJavaScript(MAILBOX_DISCOVER, true)
     .then((result) => {
-      if (result && Array.isArray(result.mailboxes)) syncDiscoveredMailboxes(result.mailboxes)
+      if (result && Array.isArray(result.mailboxes)) syncDiscoveredMailboxes(result.mailboxes, result.primaryEmail)
     })
     .catch(() => {})
 }
@@ -2194,7 +2379,6 @@ const MAIL_SCRAPE = `(() => {
           if (w === 'bold' || parseInt(w, 10) >= 600) { unread = true; break; }
         }
       }
-      if (!unread) continue;
       // Today detection from the row's own stamp: today's mail shows a bare
       // time ("9:30 AM"), older mail a day/date prefix.
       const hasTime = text.some(t => /^\\d{1,2}:\\d{2}(\\s*(AM|PM))?$/i.test(t));
@@ -2231,8 +2415,10 @@ const MAIL_SCRAPE = `(() => {
         preview: preview.slice(0, 140),
         id,
         today,
+        isRead: !unread,
         rowIdx: i
       });
+      if (items.length >= 10) break;
     }
     return { state: items.length ? 'ok' : 'empty', items };
   } catch (e) { return { state: 'error', items: [] }; }
@@ -2252,12 +2438,44 @@ const MAILBOX_DISCOVER = `(() => {
     const mailboxes = [];
     const seen = new Set();
     const strip = (s) => String(s || '').replace(/[\\u200B-\\u200D\\u2060\\uFEFF\\uFFFD\\uE000-\\uF8FF\\u25A0-\\u25A1]/g, '').replace(/\\s+/g, ' ').trim();
+    const emailOf = (value) => (String(value || '').match(/[\\w.+-]+@[\\w.-]+/) || [''])[0].toLowerCase();
+    let primaryEmail = '';
+    const accountControls = Array.from(document.querySelectorAll(
+      '#O365_MainLink_Me, [id*="O365_MainLink_Me"], [aria-label*="Account manager" i], ' +
+      '[aria-label*="signed in" i], [aria-label*="My account" i], [data-testid*="account" i], [data-testid*="me" i]'
+    ));
+    for (const control of accountControls) {
+      const blob = [
+        control.getAttribute('aria-label'),
+        control.getAttribute('title'),
+        control.textContent
+      ].map(strip).filter(Boolean).join(' ');
+      const email = emailOf(blob);
+      if (email) { primaryEmail = email; break; }
+    }
+    // If the account menu does not expose an email, infer the primary account
+    // from the selected Inbox in the primary Mail view. Discovery only runs in
+    // that view, so the selected Inbox belongs to the signed-in account, not a
+    // managed mailbox tab.
+    const allTreeItems = Array.from(document.querySelectorAll('[role="treeitem"]'));
+    let currentRootEmail = '';
+    for (const item of allTreeItems) {
+      const level = Number(item.getAttribute('aria-level') || '1');
+      const label = strip(item.getAttribute('aria-label') || item.textContent || '');
+      const email = emailOf(label);
+      if (level <= 1 && email) currentRootEmail = email;
+      const selected = item.getAttribute('aria-selected') === 'true' || item.getAttribute('aria-current') === 'page';
+      if (!primaryEmail && selected && currentRootEmail && /\\binbox\\b/i.test(label)) {
+        primaryEmail = currentRootEmail;
+        break;
+      }
+    }
     const hrefFor = (el, fallbackEmail) => {
       const link = el && (el.matches && el.matches('a[href]') ? el : el.querySelector && el.querySelector('a[href]'));
       if (link && link.href && /^https?:/i.test(link.href)) return link.href;
-      return origin + '/mail/' + encodeURIComponent(fallbackEmail) + '/';
+      return origin + '/mail/' + encodeURIComponent(fallbackEmail) + '/inbox';
     };
-    const add = (id, label, url) => {
+    const add = (id, label, url, options = {}) => {
       const key = String(id || label || '').trim();
       if (!key || seen.has(key)) return;
       const cleanLabel = strip(label) || 'Mail';
@@ -2266,10 +2484,11 @@ const MAILBOX_DISCOVER = `(() => {
         id: key.slice(0, 80),
         label: cleanLabel.slice(0, 60),
         url: url || (origin + '/mail/'),
-        home: url || (origin + '/mail/')
+        home: url || (origin + '/mail/'),
+        primaryAccount: Boolean(options.primaryAccount)
       });
     };
-    add('primary', 'Mail', origin + '/mail/');
+    add('primary', 'Mail', origin + '/mail/', { primaryAccount: true });
     const treeItems = Array.from(document.querySelectorAll('[role="treeitem"][aria-level="1"]'));
     for (const item of treeItems) {
       const label = strip(item.getAttribute('aria-label') || item.textContent || '');
@@ -2277,8 +2496,8 @@ const MAILBOX_DISCOVER = `(() => {
       if (/^(drafts|sent items|sent|deleted items|junk email|archive|outbox|notes)$/i.test(label)) continue;
       const emailMatch = label.match(/[\\w.+-]+@[\\w.-]+/);
       if (emailMatch) {
-        const email = emailMatch[0];
-        add(email, label.split(',')[0].trim() || email, hrefFor(item, email));
+        const email = emailMatch[0].toLowerCase();
+        add(email, label.split(',')[0].trim() || email, hrefFor(item, email), { primaryAccount: primaryEmail && email === primaryEmail });
       }
     }
     const groups = document.querySelectorAll('[role="tree"] [role="group"] > [role="treeitem"]');
@@ -2286,18 +2505,20 @@ const MAILBOX_DISCOVER = `(() => {
       const label = strip(g.getAttribute('aria-label') || g.textContent || '');
       const emailMatch = label && label.match(/[\\w.+-]+@[\\w.-]+/);
       if (emailMatch) {
-        const email = emailMatch[0];
-        add(email, label.split(',')[0].trim() || email, hrefFor(g, email));
+        const email = emailMatch[0].toLowerCase();
+        add(email, label.split(',')[0].trim() || email, hrefFor(g, email), { primaryAccount: primaryEmail && email === primaryEmail });
       }
     }
-    return { mailboxes };
+    return { mailboxes, primaryEmail };
   } catch (e) {
     return { mailboxes: [] };
   }
 })()`
 
 // Asana uses CSS modules with hashed class names, so we try several selector
-// strategies and fall back to broader role-based matching if none hit.
+// strategies and only keep rows with task-specific signals. A plain [role=row]
+// fallback is too broad on Asana's dashboard: project chips, assignee avatars,
+// and due-date cells can each be exposed as separate rows.
 const ASANA_SCRAPE = `(() => {
   try {
     // Detect login / unauthenticated state before trying to scrape tasks.
@@ -2306,36 +2527,72 @@ const ASANA_SCRAPE = `(() => {
       || location.hostname === 'account.asana.com';
     if (isLoginPage) return { state: 'login', items: [] };
 
+    const strip = (s) => String(s || '').replace(/[\\u200B-\\u200D\\u2060\\uFEFF\\uFFFD\\uE000-\\uF8FF]/g, '').replace(/\\s+/g, ' ').trim();
+    const looksLikeMetadata = (text) =>
+      !text ||
+      /^due date/i.test(text) ||
+      /^(Today|Tomorrow|Yesterday)$/i.test(text) ||
+      /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)(day)?\\b/i.test(text) ||
+      /^[A-Z]{1,4}$/.test(text);
+    const rowFor = (el) =>
+      el.closest('[data-task-id], [data-testid*="task-row" i], [role="row"], [class*="TaskRow" i], [class*="taskRow" i]') || el;
+    const cleanTaskName = (text) =>
+      strip(text)
+        .replace(/^(modal|dialog)\\s+/i, '')
+        .replace(/^task\\s*name[:\\s-]*/i, '')
+        .replace(/^open task[:\\s-]*/i, '')
+        .trim();
+    const taskSignal = (row) =>
+      row.querySelector(
+        'a[href*="/task/"], a[href*="/0/"], [data-task-id], [data-task-name], ' +
+        '[aria-label*="mark complete" i], [aria-label*="complete task" i], [data-testid*="TaskCheckbox" i], ' +
+        '[role="checkbox"], textarea, [contenteditable="true"]'
+      );
+    const taskNameFrom = (row) => {
+      const explicit = row.querySelector(
+        '[data-task-name], textarea[aria-label*="task" i], textarea, ' +
+        '[contenteditable="true"][aria-label*="task" i], [data-testid*="task-name" i], ' +
+        '[class*="TaskName" i], [class*="taskName" i], a[href*="/task/"], a[href*="/0/"]'
+      );
+      if (explicit) {
+        const val = strip(explicit.value || explicit.getAttribute('data-task-name') || explicit.getAttribute('aria-label') || explicit.innerText || explicit.textContent || '');
+        const cleaned = cleanTaskName(val);
+        if (!looksLikeMetadata(cleaned)) return cleaned;
+      }
+      const texts = (row.innerText || '')
+        .split('\\n')
+        .map(cleanTaskName)
+        .filter((text) => text.length > 1 && text.length < 200 && !looksLikeMetadata(text));
+      return texts[0] || '';
+    };
     const seen = new Set();
+    const seenRows = new Set();
     const items = [];
-    // Try specific selectors first; fall back to generic [role="row"].
+    const rawCandidates = [];
     const selectors = [
+      '[data-task-id]',
+      'a[href*="/task/"]',
+      'a[href*="/0/"]',
+      '[aria-label*="mark complete" i]',
+      '[aria-label*="complete task" i]',
+      '[data-testid*="TaskCheckbox" i]',
       '[data-testid="task-row-content"]',
+      '[data-testid*="task-row" i]',
       '[data-testid*="TaskRow"]',
       '[class*="taskRow" i]',
       '[class*="TaskRow" i]',
-      '.TaskRow'
+      '.TaskRow',
+      '[role="row"]'
     ];
-    let rows = [];
     for (const sel of selectors) {
-      rows = Array.from(document.querySelectorAll(sel));
-      if (rows.length) break;
+      rawCandidates.push(...Array.from(document.querySelectorAll(sel)));
     }
-    if (!rows.length) rows = Array.from(document.querySelectorAll('[role="row"]'));
 
-    for (let ri = 0; ri < rows.length; ri++) {
-      const row = rows[ri];
-      const nameEl = row.querySelector(
-        '[data-testid*="task-name"], [class*="TaskName" i] textarea, ' +
-        '[class*="TaskName" i] [contenteditable], [class*="taskName" i], ' +
-        'a[href*="/task/"], [data-task-name]'
-      );
-      let name = '';
-      if (nameEl) name = (nameEl.value || nameEl.getAttribute('data-task-name') || nameEl.innerText || '').trim();
-      if (!name) {
-        const texts = (row.innerText || '').split('\\n').map(s => s.trim()).filter(s => s && s.length > 1 && s.length < 200);
-        name = texts[0] || '';
-      }
+    for (let ri = 0; ri < rawCandidates.length; ri++) {
+      const row = rowFor(rawCandidates[ri]);
+      if (!row || seenRows.has(row) || !taskSignal(row)) continue;
+      seenRows.add(row);
+      let name = taskNameFrom(row);
       name = name.slice(0, 90);
       if (!name || seen.has(name)) continue;
       // Skip rows already marked complete — not actionable, and they'd churn
@@ -2355,7 +2612,7 @@ const ASANA_SCRAPE = `(() => {
       }
       if (isSub && items.length) { (items[items.length - 1].subtasks ||= []).push(name); }
       else items.push({ id: gid || name, name, subtasks: [], rowIdx: ri, taskUrl });
-      if (items.length >= 8) break;
+      if (items.length >= 30) break;
     }
     return { state: items.length ? 'ok' : 'empty', items };
   } catch (e) { return { state: 'error', items: [] }; }
@@ -2428,7 +2685,7 @@ const CALENDAR_SCRAPE = `(() => {
       if (seen.has(id)) continue;
       seen.add(id);
       items.push({ id, title: title.slice(0, 80), time: time.slice(0, 40), startIso, rowIdx: i, cancelled });
-      if (items.length >= 20) break;
+      if (items.length >= 30) break;
     }
     return { state: items.length ? 'ok' : 'empty', items };
   } catch(e) { return { state: 'error', items: [] }; }
@@ -2448,6 +2705,29 @@ function feedSignature(kind, items) {
     .join('\n')
 }
 
+function cleanAsanaTaskName(value) {
+  return String(value || '')
+    .replace(/[\u200B-\u200D\u2060\uFEFF\uFFFD\uE000-\uF8FF]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^(modal|dialog)\s+/i, '')
+    .replace(/^task\s*name[:\s-]*/i, '')
+    .replace(/^open task[:\s-]*/i, '')
+    .trim()
+}
+
+function normalizeFeedResult(feed, result) {
+  if (!result || !Array.isArray(result.items)) return { state: result && result.state, items: [] }
+  if (feed.kind !== 'asana') return result
+  return {
+    ...result,
+    items: result.items.map((item) => ({
+      ...item,
+      name: cleanAsanaTaskName(item.name)
+    })).filter((item) => item.name)
+  }
+}
+
 // Apply a fetched { state, items } result to a feed using the cache rule:
 // good data always wins; an empty/error/auth result only overwrites the cache
 // when this tab is active or there's no last-known-good list yet. API results
@@ -2457,6 +2737,7 @@ function feedSignature(kind, items) {
 // back, the cached list is refreshed in place (rowIdx/links) but never
 // replaced, so repeated polls don't churn the sidebar.
 function applyFeedResult(key, feed, result, { trusted = false } = {}) {
+  result = normalizeFeedResult(feed, result)
   const isActive = key === activeServiceKey
   const hadCache = Array.isArray(feed.items) && feed.items.length > 0
   const gotItems = result.items.length > 0
@@ -2528,11 +2809,10 @@ function refreshFeed(key) {
   if (!feed) {
     return
   }
-  const service = findService(key)
   // When the provider behind this feed is connected, prefer the API entirely.
   // Shared Outlook mailboxes need their own view scrape; Graph's /me inbox would
   // duplicate the primary inbox under every discovered mailbox.
-  if (connections.feedIsLive(feed.kind) && !(feed.kind === 'mail' && service && service.mailboxManaged)) {
+  if (apiOwnsFeed(key)) {
     refreshFeedFromApi(key, feed).catch((err) => {
       // Surface the real reason — a 403 (missing Graph consent), 5xx, or parse
       // error otherwise vanishes here and looks like "the API just doesn't work".
@@ -2545,6 +2825,7 @@ function refreshFeed(key) {
     return
   }
 
+  const service = findService(key)
   const view = serviceViews.get(key)
   if (!view || view.webContents.isDestroyed() || view.webContents.isLoading()) {
     return
@@ -2571,9 +2852,14 @@ function refreshFeed(key) {
         // (ids, startIso), so the same notification diffing applies pre-connect.
         if (feed.kind === 'mail') {
           const mailState = serviceState[key]
+          const scrapedUnread = feed.items.filter((item) => item && item.isRead === false).length
           const visibleUnread = service && service.mailboxManaged
-            ? feed.items.length
+            ? scrapedUnread
             : mailState ? mailState.unreadCount : 0
+          if (service && service.mailboxManaged && mailState && mailState.unreadCount !== visibleUnread) {
+            mailState.unreadCount = visibleUnread
+            changed = true
+          }
           diffAndNotifyMail(feed.items, visibleUnread, key)
         } else if (feed.kind === 'asana') {
           // Badge mirrors the visible task count, same as the API path.
@@ -2614,22 +2900,31 @@ function refreshFeeds() {
 
   const visible = Boolean(panelWindow && panelWindow.isVisible() && !settingsOpen)
   for (const key of Object.keys(serviceFeeds)) {
-    const kind = serviceFeeds[key].kind
-    // API-backed feeds poll continuously — no view needed, fire every tick.
-    if (connections.feedIsLive(kind)) {
+    // API-owned feeds poll continuously — no view needed, fire every tick.
+    // Shared Outlook mailboxes are a special mail feed that stays scrape-owned
+    // even while Microsoft Graph powers the primary inbox.
+    if (apiOwnsFeed(key)) {
       refreshFeed(key)
       continue
     }
     // Scrape feeds need a loaded view. Previously only the visible panel's views
     // scraped, so background tabs never notified — the "only the first tab gets
     // notifications" bug. Now every loaded view scrapes even with the panel
-    // hidden; hidden scrapes are throttled (HIDDEN_SCRAPE_MS) to spare CPU.
+    // hidden; hidden mail scrapes run more often so notifications do not feel
+    // like they require clicking the inbox first.
     if (!loadedServiceKeys.has(key)) continue
     const view = serviceViews.get(key)
     if (!view || view.webContents.isDestroyed()) continue
-    if (!visible && now - (lastScrapeAt[key] || 0) < HIDDEN_SCRAPE_MS) continue
+    const hiddenGap = serviceFeeds[key].kind === 'mail' ? HIDDEN_MAIL_SCRAPE_MS : HIDDEN_SCRAPE_MS
+    if (!visible && now - (lastScrapeAt[key] || 0) < hiddenGap) continue
     lastScrapeAt[key] = now
     refreshFeed(key)
+  }
+}
+
+function refreshApiFeedsNow() {
+  for (const key of Object.keys(serviceFeeds)) {
+    if (apiOwnsFeed(key)) refreshFeed(key)
   }
 }
 
@@ -2638,6 +2933,7 @@ function startFeedTimer() {
     clearInterval(feedTimer)
   }
   feedTimer = setInterval(refreshFeeds, FEED_REFRESH_MS)
+  refreshApiFeedsNow()
 }
 
 /* ---------- Tray ---------- */
@@ -2674,14 +2970,17 @@ function buildTrayContextMenu() {
     { label: 'Open MailStudio', click: () => togglePanelWindow(true) },
     { label: 'Menu Panel', click: () => toggleMenuWindow(true) },
     { type: 'separator' },
-    ...visibleServices().map((service) => ({
-      label: serviceState[service.key] && serviceState[service.key].unreadCount > 0
-        ? `${service.label} (${serviceState[service.key].unreadCount})`
-        : service.label,
-      type: 'radio',
-      checked: service.key === activeServiceKey,
-      click: () => showService(service.key)
-    })),
+    ...visibleServices().map((service) => {
+      const label = serviceDisplayLabel(service)
+      return {
+        label: serviceState[service.key] && serviceState[service.key].unreadCount > 0
+          ? `${label} (${serviceState[service.key].unreadCount})`
+          : label,
+        type: 'radio',
+        checked: service.key === activeServiceKey,
+        click: () => showService(service.key)
+      }
+    }),
     { type: 'separator' },
     { label: 'Reload Active View', click: () => navigate('reload') },
     { label: 'Open Active in Browser', click: () => openExternalSafe(activeServiceHref()) },
@@ -2759,6 +3058,7 @@ function createPanelWindow() {
     }
   })
 
+  panelWindow.setMaxListeners(30)
   panelWindow.webContents.setMaxListeners(20)
   panelWindow.loadFile(path.join(__dirname, '..', 'renderer', 'panel.html'))
   hardenLocalWindow(panelWindow)
@@ -2921,15 +3221,17 @@ function getSnapshot() {
     services: settings.services.map((service) => {
       const state = serviceState[service.key] || {}
       const feed = serviceFeeds[service.key]
+      const label = serviceDisplayLabel(service)
       return {
         key: service.key,
-        label: service.label,
+        label,
         icon: service.icon,
         url: service.url,
         home: service.home,
         builtin: service.builtin,
+        mailboxManaged: Boolean(service.mailboxManaged),
         visible: service.visible,
-        title: state.title || service.label,
+        title: state.title || label,
         unreadCount: state.unreadCount || 0,
         href: state.href || service.url,
         snoozed: isSnoozed(service.key),
@@ -2940,7 +3242,19 @@ function getSnapshot() {
   }
 }
 
+function hasConnectedApiProvider() {
+  const status = connections.getStatus()
+  return ['microsoft', 'asana'].some((provider) => status[provider] && status[provider].status === 'connected')
+}
+
+function armNotificationsForConnectedProviders() {
+  if (!settings.onboarded && hasConnectedApiProvider()) {
+    settings = store.save({ ...settings, onboarded: true, notifSetupSkipped: false })
+  }
+}
+
 function pushSnapshot() {
+  armNotificationsForConnectedProviders()
   updateTray()
   const snapshot = getSnapshot()
   if (panelWindow && !panelWindow.isDestroyed()) {
@@ -2948,8 +3262,9 @@ function pushSnapshot() {
     // active service name and unread count rather than just "MailStudio".
     const svc = findService(activeServiceKey)
     const unread = (serviceState[activeServiceKey] || {}).unreadCount || 0
+    const svcLabel = serviceDisplayLabel(svc)
     const title = svc
-      ? (unread > 0 ? `${svc.label} (${unread}) — ${APP_NAME}` : `${svc.label} — ${APP_NAME}`)
+      ? (unread > 0 ? `${svcLabel} (${unread}) — ${APP_NAME}` : `${svcLabel} — ${APP_NAME}`)
       : APP_NAME
     panelWindow.setTitle(title)
     panelWindow.webContents.send('panel:status-updated', snapshot)
@@ -2977,11 +3292,13 @@ function applySettings(next) {
   buildAllowedHosts()
   syncServiceViews()
   buildAppMenu()
+  prewarmLiveScrapeViews()
   if (panelWindow) {
     attachServiceView()
   }
   pushSnapshot()
   setTimeout(refreshFeeds, 1500)
+  setTimeout(refreshApiFeedsNow, 250)
 }
 
 function exportPortableSettings() {
@@ -3388,13 +3705,21 @@ function registerIpc() {
           const feedKind = serviceFeeds[command.serviceKey] ? serviceFeeds[command.serviceKey].kind : null
           const feed = serviceFeeds[command.serviceKey]
           const recentItem = findFeedItem(feed, command)
-          const itemUrl =
-            stringOrNull(command.deepLink) ||
-            stringOrNull(recentItem && recentItem.deepLink) ||
-            stringOrNull(command.taskUrl) ||
-            stringOrNull(recentItem && recentItem.taskUrl) ||
-            stringOrNull(command.webLink) ||
-            stringOrNull(recentItem && recentItem.webLink)
+          const itemUrl = feedKind === 'mail'
+            ? (
+                stringOrNull(command.webLink) ||
+                stringOrNull(recentItem && recentItem.webLink) ||
+                stringOrNull(command.deepLink) ||
+                stringOrNull(recentItem && recentItem.deepLink)
+              )
+            : (
+                stringOrNull(command.deepLink) ||
+                stringOrNull(recentItem && recentItem.deepLink) ||
+                stringOrNull(command.taskUrl) ||
+                stringOrNull(recentItem && recentItem.taskUrl) ||
+                stringOrNull(command.webLink) ||
+                stringOrNull(recentItem && recentItem.webLink)
+              )
           if (recentItem) {
             addRecentItem({
               kind: feedKind || 'feed',
@@ -3418,7 +3743,7 @@ function registerIpc() {
             setTimeout(() => {
               targetView.webContents
                 .executeJavaScript(
-                  `(() => { const rows = Array.from(document.querySelectorAll('div[role="option"], div[role="listitem"]')); const row = rows[${idx}]; if (row) { row.click(); row.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } })()`,
+                  `(() => { const rows = Array.from(document.querySelectorAll('div[role="option"], div[role="listitem"], [data-convid]')); const row = rows[${idx}]; if (row) { row.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); if (typeof row.focus === 'function') row.focus(); const target = row.querySelector('a[href], button[aria-label*="open" i]') || row; target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, detail: 1 })); target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window, detail: 1 })); target.click(); target.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window, detail: 2 })); row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true })); row.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true })); } })()`,
                   true
                 )
                 .catch(() => {})
@@ -3441,7 +3766,7 @@ function registerIpc() {
               setTimeout(() => {
                 targetView.webContents
                   .executeJavaScript(
-                    `(() => { const sels = ['[data-testid="task-row-content"]','[data-testid*="TaskRow"]','[class*="taskRow" i]','[class*="TaskRow" i]','.TaskRow','[role="row"]']; let rows = []; for (const s of sels) { rows = Array.from(document.querySelectorAll(s)); if (rows.length) break; } const row = rows[${idx}]; if (row) { const link = row.querySelector('a[href*="/task/"],a[href*="/0/"]'); if (link) link.click(); else row.click(); row.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } })()`,
+                    `(() => { const rowFor = (el) => el.closest('[data-task-id], [data-testid*="task-row" i], [role="row"], [class*="TaskRow" i], [class*="taskRow" i]') || el; const taskSignal = (row) => row.querySelector('a[href*="/task/"], a[href*="/0/"], [data-task-id], [data-task-name], [aria-label*="mark complete" i], [aria-label*="complete task" i], [data-testid*="TaskCheckbox" i], [role="checkbox"], textarea, [contenteditable="true"]'); const selectors = ['[data-task-id]','a[href*="/task/"]','a[href*="/0/"]','[aria-label*="mark complete" i]','[aria-label*="complete task" i]','[data-testid*="TaskCheckbox" i]','[data-testid="task-row-content"]','[data-testid*="task-row" i]','[data-testid*="TaskRow"]','[class*="taskRow" i]','[class*="TaskRow" i]','.TaskRow','[role="row"]']; const raw = []; for (const s of selectors) raw.push(...Array.from(document.querySelectorAll(s))); const candidate = raw[${idx}]; const row = candidate ? rowFor(candidate) : null; if (row && taskSignal(row)) { row.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); const link = row.querySelector('a[href*="/task/"],a[href*="/0/"]'); if (link) link.click(); else row.click(); } })()`,
                     true
                   )
                   .catch(() => {})
@@ -3511,6 +3836,15 @@ function registerIpc() {
         break
       case 'connect-provider':
         if (typeof command.provider === 'string') {
+          const connStatus = connections.getStatus()[command.provider]
+          if (connStatus && connStatus.status === 'connecting') {
+            break
+          }
+          if (command.provider === 'asana' && findService('asana')?.visible) {
+            activeServiceKey = 'asana'
+            persistLayout()
+            pushSnapshot()
+          }
           // State transitions (connecting → connected/error) flow back through
           // the connections onChange callback → pushSnapshot.
           console.log(`[connect] starting ${command.provider}`)
@@ -3536,6 +3870,7 @@ function registerIpc() {
               if (!settings.onboarded) {
                 settings = store.save({ ...settings, onboarded: true })
               }
+              refreshApiFeedsNow()
               pushSnapshot()
               setTimeout(refreshFeeds, 800)
             })
@@ -3553,6 +3888,7 @@ function registerIpc() {
           // Drop the cached API feed and baselines for that provider's kinds
           // so the sidebar falls back to scrape/empty immediately.
           resetProviderFeeds(command.provider)
+          refreshApiFeedsNow()
           pushSnapshot()
           setTimeout(refreshFeeds, 500)
         }
@@ -3780,7 +4116,10 @@ app.whenReady().then(() => {
   connections.init({
     config: settings.connections,
     partitionForProvider,
-    onChange: () => pushSnapshot()
+    onChange: () => {
+      refreshApiFeedsNow()
+      pushSnapshot()
+    }
   })
 
   for (const service of settings.services) {

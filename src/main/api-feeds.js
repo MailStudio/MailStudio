@@ -59,11 +59,11 @@ async function apiGet(url, accessToken, extraHeaders) {
 
 /* ---------- Microsoft Graph: Mail ---------- */
 async function fetchMail(accessToken) {
-  // Unread inbox, newest first. $select keeps the payload small.
+  // Inbox, newest first. $select keeps the payload small.
   const url =
     `${GRAPH}/me/mailFolders/inbox/messages` +
-    `?$filter=isRead eq false&$top=10&$orderby=receivedDateTime desc` +
-    `&$select=id,subject,bodyPreview,from,receivedDateTime,webLink`
+    `?$top=10&$orderby=receivedDateTime desc` +
+    `&$select=id,subject,bodyPreview,from,receivedDateTime,webLink,isRead`
   const json = await apiGet(url, accessToken)
   const rows = Array.isArray(json.value) ? json.value : []
   const items = rows.map((m) => {
@@ -75,6 +75,7 @@ async function fetchMail(accessToken) {
       preview: (m.bodyPreview || '').replace(/\s+/g, ' ').trim().slice(0, 160),
       // Raw Graph timestamp so the renderer can count "unread today" itself.
       receivedIso: m.receivedDateTime || null,
+      isRead: Boolean(m.isRead),
       // Prefer an Outlook-owned message route for in-app opening. Some Graph
       // webLink variants bounce through Microsoft 365 launch pages, which our
       // router quite reasonably treats as Copilot/Office.
@@ -99,7 +100,7 @@ async function fetchCalendar(accessToken) {
     `${GRAPH}/me/calendarView` +
     `?startDateTime=${encodeURIComponent(now.toISOString())}` +
     `&endDateTime=${encodeURIComponent(end.toISOString())}` +
-    `&$select=id,subject,start,end,isAllDay,webLink,isCancelled&$orderby=start/dateTime&$top=10`
+    `&$select=id,subject,start,end,isAllDay,webLink,isCancelled&$orderby=start/dateTime&$top=30`
   // Ask Graph to return start/end in the user's local zone for clean formatting.
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
   const json = await apiGet(url, accessToken, { Prefer: `outlook.timezone="${tz}"` })
@@ -154,12 +155,12 @@ async function fetchAsanaTasks(accessToken, workspaceGid) {
   // Incomplete tasks assigned to me in the primary workspace.
   const url =
     `${ASANA}/tasks?assignee=me&workspace=${encodeURIComponent(workspaceGid)}` +
-    `&completed_since=now&opt_fields=name,permalink_url,due_on&limit=20`
+    `&completed_since=now&opt_fields=name,permalink_url,due_on&limit=30`
   const json = await apiGet(url, accessToken)
   const rows = Array.isArray(json.data) ? json.data : []
   const items = rows
     .filter((t) => t.name && t.name.trim())
-    .slice(0, 12)
+    .slice(0, 30)
     .map((t) => ({
       id: t.gid,
       name: t.name.slice(0, 110),

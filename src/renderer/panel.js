@@ -169,6 +169,7 @@ function renderFeed(service) {
 
     if (feed.kind === 'mail') {
       row.classList.add('feed-mail')
+      if (item.isRead) row.classList.add('feed-mail-read')
       const timeStr = item.receivedIso
         ? relativeTime(item.receivedIso)
         : item.today === true ? 'Today' : ''
@@ -344,8 +345,11 @@ function workingServices() {
     label: s.label,
     url: s.url,
     home: s.home,
+    icon: s.icon,
     visible: s.visible,
-    builtin: s.builtin
+    builtin: s.builtin,
+    mailboxManaged: Boolean(s.mailboxManaged),
+    feed: s.feed ? s.feed.kind : undefined
   }))
 }
 
@@ -769,7 +773,10 @@ function renderSummary(snapshot) {
       // Unread emails received today: scraped rows carry a `today` flag, API
       // rows the Graph receivedDateTime.
       mail += (service.feed.items || []).filter(
-        (item) => item.today === true || (item.receivedIso && new Date(item.receivedIso).toDateString() === todayStr)
+        (item) => item.isRead === false && (
+          item.today === true ||
+          (item.receivedIso && new Date(item.receivedIso).toDateString() === todayStr)
+        )
       ).length
     } else if (service.feed.kind === 'calendar') events = (service.feed.items || []).length
     else if (service.feed.kind === 'asana') tasks = (service.feed.items || []).length
@@ -1679,6 +1686,8 @@ function renderConnCards(snapshot, container) {
           type: 'save-connections',
           connections: readConnConfig(container)
         })
+        action.disabled = true
+        action.textContent = 'Connecting...'
         window.panelApi.sendCommand({ type: 'connect-provider', provider })
       })
     }
