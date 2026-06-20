@@ -239,6 +239,6 @@ test('save tightens an existing settings file to owner-only permissions', () => 
   store.save({ theme: 'light' })
 
   const mode = fs.statSync(target).mode & 0o777
-  assert.equal(mode, 0o600)
+  if (process.platform !== 'win32') assert.equal(mode, 0o600)
   assert.equal(JSON.parse(fs.readFileSync(target, 'utf8')).theme, 'light')
 })
