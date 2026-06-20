@@ -2,6 +2,7 @@
 
 const test = require('node:test')
 const assert = require('node:assert/strict')
+const fs = require('node:fs')
 const path = require('node:path')
 
 const ROOT = path.resolve(__dirname, '..', '..')
@@ -268,6 +269,59 @@ test('simulator: OAuth token failures preserve status and OAuth error code', asy
   }
 })
 
+test('simulator: OAuth success responses must include an access token', async () => {
+  const { loaded: oauth, restore } = loadFresh(path.join(ROOT, 'src', 'main', 'oauth.js'), {})
+  try {
+    await withMockedFetch(async () => mockJsonResponse(200, {
+      token_type: 'Bearer',
+      expires_in: 3600,
+      refresh_token: 'refresh-only'
+    }), async () => {
+      await assert.rejects(
+        () => oauth.refreshTokens({
+          provider: 'microsoft',
+          clientId: 'ms-client',
+          refreshToken: 'refresh'
+        }),
+        (err) => err instanceof oauth.TokenError && err.status === 0
+      )
+    })
+  } finally {
+    restore()
+  }
+})
+
+test('simulator: secure store creates the vault directory before first persist', () => {
+  const secureStorePath = path.join(ROOT, 'src', 'main', 'secure-store.js')
+  const tmpRoot = path.join(ROOT, 'tooling', 'qa', '.tmp-secure-store-test')
+  fs.mkdirSync(tmpRoot, { recursive: true })
+  const userData = fs.mkdtempSync(path.join(tmpRoot, `${process.pid}-`))
+  fs.rmSync(userData, { recursive: true, force: true })
+  const { loaded: secureStore, restore } = loadFresh(secureStorePath, {
+    [require.resolve('electron')]: {
+      app: { getPath: () => userData },
+      safeStorage: {
+        isEncryptionAvailable: () => true,
+        encryptString: (value) => Buffer.from(value, 'utf8'),
+        decryptString: (buffer) => Buffer.from(buffer).toString('utf8')
+      }
+    }
+  })
+  try {
+    secureStore.setToken('microsoft', {
+      accessToken: 'access',
+      refreshToken: 'refresh',
+      expiresAt: Date.now() + 60_000
+    })
+    const target = path.join(userData, 'mailstudio-credentials.bin')
+    assert.equal(fs.existsSync(target), true)
+    assert.equal(secureStore.getToken('microsoft').accessToken, 'access')
+  } finally {
+    restore()
+    fs.rmSync(userData, { recursive: true, force: true })
+  }
+})
+
 function loadConnectionsSimulator({ tokens, secrets, oauthImpl, apiFeedsImpl }) {
   const secureStorePath = path.join(ROOT, 'src', 'main', 'secure-store.js')
   const oauthPath = path.join(ROOT, 'src', 'main', 'oauth.js')
@@ -354,6 +408,65 @@ test('simulator: connections refreshes once after a Graph 401 and retries the fe
     assert.equal(tokens.microsoft.accessToken, 'fresh-access')
     assert.deepEqual(tokens.microsoft.account, { name: 'Mina' })
     assert.equal(connections.isConnected('microsoft'), true)
+  } finally {
+    restore()
+  }
+})
+
+test('simulator: disconnect during token refresh does not resurrect the provider', async () => {
+  class AuthError extends Error {}
+  class ThrottledError extends Error {}
+  class TokenError extends Error {}
+
+  const tokens = {
+    microsoft: {
+      accessToken: 'old-access',
+      refreshToken: 'old-refresh',
+      expiresAt: Date.now() - 1000,
+      account: { name: 'Mina' }
+    }
+  }
+  let releaseRefresh
+  let refreshStarted
+  const refreshStartedPromise = new Promise((resolve) => { refreshStarted = resolve })
+  const releaseRefreshPromise = new Promise((resolve) => { releaseRefresh = resolve })
+
+  const { loaded: connections, restore } = loadConnectionsSimulator({
+    tokens,
+    secrets: {},
+    oauthImpl: {
+      TokenError,
+      CancelledError: class CancelledError extends Error {},
+      PROVIDERS: { microsoft: { label: 'Microsoft' }, asana: { label: 'Asana' } },
+      isProvider: () => true,
+      refreshTokens: async () => {
+        refreshStarted()
+        await releaseRefreshPromise
+        return {
+          accessToken: 'fresh-access',
+          refreshToken: 'fresh-refresh',
+          expiresAt: Date.now() + 60_000,
+          scope: 'scope'
+        }
+      }
+    },
+    apiFeedsImpl: {
+      AuthError,
+      ThrottledError,
+      fetchMail: async () => {
+        throw new Error('stale refresh result should not reach the feed')
+      }
+    }
+  })
+  try {
+    connections.init({ config: { microsoft: { clientId: 'ms-client', tenant: 'common' } } })
+    const pending = connections.getFeed('mail')
+    await refreshStartedPromise
+    connections.disconnect('microsoft')
+    releaseRefresh()
+    assert.equal(await pending, null)
+    assert.equal(tokens.microsoft, null)
+    assert.equal(connections.isConnected('microsoft'), false)
   } finally {
     restore()
   }

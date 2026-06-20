@@ -65,6 +65,7 @@ function persist() {
     const blob = safeStorage.encryptString(JSON.stringify(cache))
     const target = vaultPath()
     const tmp = target + '.tmp'
+    fs.mkdirSync(path.dirname(target), { recursive: true })
     // Remove any pre-existing .tmp file before writing — a symlink planted at
     // this path by another process could otherwise redirect the write to an
     // attacker-controlled target. Unlink breaks the symlink; the subsequent

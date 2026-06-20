@@ -80,6 +80,9 @@ function createPkce() {
 // expiresAt is an absolute epoch-ms timestamp with a 60s safety margin shaved
 // off so we refresh slightly early rather than mid-request.
 function toTokenSet(json, fallbackRefresh) {
+  if (!json || typeof json.access_token !== 'string' || !json.access_token) {
+    throw new TokenError('Token response did not include an access token.', { status: 0 })
+  }
   const expiresInMs = (Number(json.expires_in) || 3600) * 1000
   return {
     accessToken: json.access_token,

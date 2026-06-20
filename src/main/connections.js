@@ -275,6 +275,16 @@ async function refreshAccessToken(provider, token) {
       tenant: provider === 'microsoft' ? config.microsoft.tenant : undefined,
       refreshToken: token.refreshToken
     })
+    const current = secureStore.getToken(provider)
+    if (
+      !current ||
+      current.accessToken !== token.accessToken ||
+      current.refreshToken !== token.refreshToken
+    ) {
+      return current && current.accessToken && Date.now() < current.expiresAt
+        ? current.accessToken
+        : null
+    }
     refreshed.account = token.account || null
     secureStore.setToken(provider, refreshed)
     if (state[provider].status !== STATUS.CONNECTED) {

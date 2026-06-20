@@ -364,6 +364,16 @@ function connectedMicrosoftEmail() {
   }
 }
 
+function connectedMicrosoftNameToken() {
+  try {
+    const status = connections.getStatus()
+    const name = status && status.microsoft && status.microsoft.account && status.microsoft.account.name
+    return String(name || '').split(/\s+/)[0].toLowerCase().replace(/[^a-z0-9]/g, '')
+  } catch {
+    return ''
+  }
+}
+
 function rememberDiscoveredPrimaryMailEmail(value) {
   const clean = extractEmail(value)
   if (!clean || clean === discoveredPrimaryMailEmail) return false
@@ -1634,9 +1644,30 @@ function buildAppMenu() {
 // connected in the product, but it does not need Microsoft cookies, so it gets
 // its own built-in partition. Each non-mailbox custom pinned site gets its own
 // partition as well.
+function stablePartitionHash(value) {
+  let h = 0
+  const str = String(value || '')
+  for (let i = 0; i < str.length; i += 1) {
+    h = (h << 5) - h + str.charCodeAt(i)
+    h |= 0
+  }
+  return Math.abs(h).toString(36)
+}
+
+function safeCustomPartitionKey(key) {
+  const raw = String(key || 'site')
+  if (/^[A-Za-z0-9_-]{1,80}$/.test(raw)) return raw
+  const safe = raw
+    .replace(/[^A-Za-z0-9_-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 60) || 'site'
+  return `${safe}-${stablePartitionHash(raw)}`.slice(0, 80)
+}
+
 function partitionFor(service) {
   if (isMailboxService(service)) return MICROSOFT_SESSION_PARTITION
-  if (!service.builtin) return `persist:mailstudio-site-${service.key}`
+  if (!service.builtin) return `persist:mailstudio-site-${safeCustomPartitionKey(service.key)}`
   if (service.key === 'asana') return ASANA_SESSION_PARTITION
   return MICROSOFT_SESSION_PARTITION
 }
@@ -2207,6 +2238,7 @@ function syncDiscoveredMailboxes(mailboxes, discoveredPrimaryEmail = '') {
     const clean = extractEmail(candidateEmail)
     if (clean) primaryEmails.add(clean)
   }
+  const primaryNameToken = connectedMicrosoftNameToken()
   const candidates = []
   for (const mb of extra) {
     const key = mailboxServiceKey(mb.id)
@@ -2215,7 +2247,16 @@ function syncDiscoveredMailboxes(mailboxes, discoveredPrimaryEmail = '') {
     if (!discoveredUrl || isPrimaryMailboxUrl(discoveredUrl)) continue
     // Drop the discovered root that is the primary account itself.
     const mbEmail = extractEmail(mb.id) || extractEmail(label) || extractEmail(discoveredUrl)
-    if (mb.primaryAccount || (mbEmail && primaryEmails.has(mbEmail))) continue
+    const localPart = mbEmail ? mbEmail.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '') : ''
+    const looksLikeNamedPrimary =
+      primaryEmails.size === 0 &&
+      primaryNameToken &&
+      localPart &&
+      (primaryNameToken.startsWith(localPart) || localPart.startsWith(primaryNameToken))
+    if (mb.primaryAccount || (mbEmail && primaryEmails.has(mbEmail)) || looksLikeNamedPrimary) {
+      if (mbEmail) rememberDiscoveredPrimaryMailEmail(mbEmail)
+      continue
+    }
     const origin = (() => {
       try { return new URL(discoveredUrl).origin } catch { return '' }
     })()
@@ -2259,6 +2300,31 @@ function syncDiscoveredMailboxes(mailboxes, discoveredPrimaryEmail = '') {
   }
   if (changed) applySettings({ ...settings, services })
   else if (primaryIdentityChanged) pushSnapshot()
+}
+
+function prunePrimaryMailboxDuplicates() {
+  const primaryEmail = connectedMicrosoftEmail()
+  const primaryNameToken = connectedMicrosoftNameToken()
+  if (!primaryEmail && !primaryNameToken) return false
+
+  let changed = false
+  const services = settings.services.filter((service) => {
+    if (!service.mailboxManaged) return true
+    const email = extractEmail(service.label) || extractEmail(service.url) || extractEmail(service.home)
+    const localPart = email ? email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '') : ''
+    const duplicate =
+      (primaryEmail && email === primaryEmail) ||
+      (!primaryEmail && primaryNameToken && localPart && (
+        primaryNameToken.startsWith(localPart) || localPart.startsWith(primaryNameToken)
+      ))
+    if (!duplicate) return true
+    if (email) rememberDiscoveredPrimaryMailEmail(email)
+    changed = true
+    return false
+  })
+  if (!changed) return false
+  settings = store.save({ ...settings, services })
+  return true
 }
 
 function discoverMailboxes() {
@@ -2572,6 +2638,7 @@ const MAILBOX_DISCOVER = `(() => {
     };
     add('primary', 'Mail', origin + '/mail/', { primaryAccount: true });
     const treeItems = Array.from(document.querySelectorAll('[role="treeitem"][aria-level="1"]'));
+    let firstMailboxRoot = true;
     for (const item of treeItems) {
       const label = strip(item.getAttribute('aria-label') || item.textContent || '');
       if (!label || /^(inbox|favorites)$/i.test(label)) continue;
@@ -2579,16 +2646,23 @@ const MAILBOX_DISCOVER = `(() => {
       const emailMatch = label.match(/[\\w.+-]+@[\\w.-]+/);
       if (emailMatch) {
         const email = emailMatch[0].toLowerCase();
-        add(email, label.split(',')[0].trim() || email, hrefFor(item, email), { primaryAccount: primaryEmail && email === primaryEmail });
+        add(email, label.split(',')[0].trim() || email, hrefFor(item, email), {
+          primaryAccount: primaryEmail ? email === primaryEmail : firstMailboxRoot
+        });
+        firstMailboxRoot = false;
       }
     }
     const groups = document.querySelectorAll('[role="tree"] [role="group"] > [role="treeitem"]');
+    let firstGroupMailboxRoot = treeItems.length === 0;
     for (const g of groups) {
       const label = strip(g.getAttribute('aria-label') || g.textContent || '');
       const emailMatch = label && label.match(/[\\w.+-]+@[\\w.-]+/);
       if (emailMatch) {
         const email = emailMatch[0].toLowerCase();
-        add(email, label.split(',')[0].trim() || email, hrefFor(g, email), { primaryAccount: primaryEmail && email === primaryEmail });
+        add(email, label.split(',')[0].trim() || email, hrefFor(g, email), {
+          primaryAccount: primaryEmail ? email === primaryEmail : firstGroupMailboxRoot
+        });
+        firstGroupMailboxRoot = false;
       }
     }
     return { mailboxes, primaryEmail };
@@ -3146,8 +3220,8 @@ function createPanelWindow() {
     }
   })
 
-  panelWindow.setMaxListeners(30)
-  panelWindow.webContents.setMaxListeners(20)
+  panelWindow.setMaxListeners(80)
+  panelWindow.webContents.setMaxListeners(40)
   const panelHtml = path.join(__dirname, '..', 'renderer', 'panel.html')
   hardenLocalWindow(panelWindow, panelHtml)
   panelWindow.loadFile(panelHtml)
@@ -3837,7 +3911,8 @@ function registerIpc() {
         refreshFeeds()
         break
       case 'open-feed-item': {
-        const targetView = serviceViews.get(command.serviceKey)
+        if (typeof command.serviceKey !== 'string') break
+        const targetView = ensureServiceView(command.serviceKey)
         if (targetView && !targetView.webContents.isDestroyed()) {
           const feedKind = serviceFeeds[command.serviceKey] ? serviceFeeds[command.serviceKey].kind : null
           const feed = serviceFeeds[command.serviceKey]
@@ -4258,6 +4333,10 @@ app.whenReady().then(() => {
       pushSnapshot()
     }
   })
+  if (prunePrimaryMailboxDuplicates()) {
+    buildAllowedHosts()
+    buildAppMenu()
+  }
 
   for (const service of settings.services) {
     ensureServiceState(service)

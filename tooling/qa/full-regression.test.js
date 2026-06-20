@@ -226,6 +226,14 @@ test('main feed click handler resolves clicked items by stable id before row fal
   assert.match(MAIN_JS, /stringOrNull\(recentItem && recentItem\.taskUrl\)/)
 })
 
+test('feed item clicks wake hibernated API-backed views before opening links', () => {
+  const block = MAIN_JS.match(/case 'open-feed-item': \{([\s\S]*?)\n\s*\}\n\s*case 'open-external':/)
+  assert.ok(block, 'open-feed-item handler missing')
+  assert.match(block[1], /if \(typeof command\.serviceKey !== 'string'\) break/)
+  assert.match(block[1], /const targetView = ensureServiceView\(command\.serviceKey\)/)
+  assert.doesNotMatch(block[1], /const targetView = serviceViews\.get\(command\.serviceKey\)/)
+})
+
 test('mail feed item opens prefer Graph webLink over constructed deep links', () => {
   const block = MAIN_JS.match(/const itemUrl = feedKind === 'mail'([\s\S]*?)if \(recentItem\)/)
   assert.ok(block, 'feed item URL selection missing')
@@ -475,7 +483,16 @@ test('shared Outlook mailboxes participate in Microsoft SSO instead of isolated 
   const partitionBlock = MAIN_JS.match(/function partitionFor\(service\) \{([\s\S]*?)\n\}/)
   assert.ok(partitionBlock, 'partitionFor missing')
   assert.match(partitionBlock[1], /if \(isMailboxService\(service\)\) return MICROSOFT_SESSION_PARTITION/)
-  assert.match(partitionBlock[1], /if \(!service\.builtin\) return `persist:mailstudio-site-\$\{service\.key\}`/)
+  assert.match(partitionBlock[1], /if \(!service\.builtin\) return `persist:mailstudio-site-\$\{safeCustomPartitionKey\(service\.key\)\}`/)
+})
+
+test('custom site partition names are sanitized before Electron session use', () => {
+  const safeKeyBlock = MAIN_JS.match(/function safeCustomPartitionKey\(key\) \{([\s\S]*?)\n\}/)
+  assert.ok(safeKeyBlock, 'safeCustomPartitionKey missing')
+  assert.match(safeKeyBlock[1], /\^\[A-Za-z0-9_-\]\{1,80\}\$/)
+  assert.match(safeKeyBlock[1], /replace\(\/\[\^A-Za-z0-9_-\]\/g, '-'\)/)
+  assert.match(safeKeyBlock[1], /stablePartitionHash\(raw\)/)
+  assert.match(MAIN_JS, /persist:mailstudio-site-\$\{safeCustomPartitionKey\(service\.key\)\}/)
 })
 
 test('Outlook mailbox URLs prefer the matching managed mailbox before primary Mail', () => {
@@ -724,11 +741,27 @@ test('the primary account is not duplicated as a shared mailbox tab', () => {
   assert.match(MAIN_JS, /function syncDiscoveredMailboxes\(mailboxes, discoveredPrimaryEmail = ''\)/)
   assert.match(MAIN_JS, /function extractEmail\(value\)/)
   assert.match(MAIN_JS, /function connectedMicrosoftEmail\(\)/)
+  assert.match(MAIN_JS, /function connectedMicrosoftNameToken\(\)/)
   assert.match(block[1], /const primaryEmails = new Set\(\)/)
   assert.match(block[1], /connectedMicrosoftEmail\(\), discoveredPrimaryEmail/)
   assert.match(block[1], /extractEmail\(candidateEmail\)/)
-  assert.match(block[1], /if \(mb\.primaryAccount \|\| \(mbEmail && primaryEmails\.has\(mbEmail\)\)\) continue/)
+  assert.match(block[1], /const primaryNameToken = connectedMicrosoftNameToken\(\)/)
+  assert.match(block[1], /const looksLikeNamedPrimary =/)
+  assert.match(block[1], /primaryNameToken\.startsWith\(localPart\) \|\| localPart\.startsWith\(primaryNameToken\)/)
+  assert.match(block[1], /mb\.primaryAccount \|\| \(mbEmail && primaryEmails\.has\(mbEmail\)\) \|\| looksLikeNamedPrimary/)
   assert.match(MAIN_JS, /syncDiscoveredMailboxes\(result\.mailboxes, result\.primaryEmail\)/)
+})
+
+test('persisted primary mailbox duplicates are pruned on startup before views are built', () => {
+  assert.match(MAIN_JS, /function prunePrimaryMailboxDuplicates\(\)/)
+  const pruneBlock = MAIN_JS.match(/function prunePrimaryMailboxDuplicates\(\) \{([\s\S]*?)\n\}/)
+  assert.ok(pruneBlock, 'prunePrimaryMailboxDuplicates missing')
+  assert.match(pruneBlock[1], /service\.mailboxManaged/)
+  assert.match(pruneBlock[1], /primaryNameToken\.startsWith\(localPart\) \|\| localPart\.startsWith\(primaryNameToken\)/)
+  assert.match(pruneBlock[1], /settings = store\.save\(\{ \.\.\.settings, services \}\)/)
+  const bootBlock = MAIN_JS.match(/connections\.init\(\{([\s\S]*?)\n\s*for \(const service of settings\.services\)/)
+  assert.ok(bootBlock, 'startup connection/view sequence missing')
+  assert.match(bootBlock[1], /if \(prunePrimaryMailboxDuplicates\(\)\)/)
 })
 
 test('the built-in Mail row displays the signed-in primary mailbox identity', () => {
@@ -766,7 +799,9 @@ test('Outlook mailbox discovery marks the profile account as primary', () => {
   assert.match(block[1], /primaryEmail = currentRootEmail/)
   assert.match(block[1], /encodeURIComponent\(fallbackEmail\) \+ '\/inbox'/)
   assert.match(block[1], /primaryAccount: Boolean\(options\.primaryAccount\)/)
-  assert.match(block[1], /primaryAccount: primaryEmail && email === primaryEmail/)
+  assert.match(block[1], /let firstMailboxRoot = true/)
+  assert.match(block[1], /primaryAccount: primaryEmail \? email === primaryEmail : firstMailboxRoot/)
+  assert.match(block[1], /firstMailboxRoot = false/)
   assert.match(block[1], /return \{ mailboxes, primaryEmail \}/)
 })
 
@@ -830,10 +865,10 @@ test('home and external-open commands tolerate missing active service state', ()
   assert.doesNotMatch(MAIN_JS, /openExternalSafe\(serviceState\[activeServiceKey\]\.href\)/)
 })
 
-test('panel BrowserWindow listener cap covers repeated OAuth child windows', () => {
-  const block = MAIN_JS.match(/function createPanelWindow\(\) \{([\s\S]*?)\n  panelWindow\.webContents\.setMaxListeners\(20\)/)
+test('panel BrowserWindow listener cap covers repeated OAuth child windows and heavy navigation', () => {
+  const block = MAIN_JS.match(/function createPanelWindow\(\) \{([\s\S]*?)\n  panelWindow\.webContents\.setMaxListeners\(40\)/)
   assert.ok(block, 'createPanelWindow listener setup missing')
-  assert.match(block[1], /panelWindow\.setMaxListeners\(30\)/)
+  assert.match(block[1], /panelWindow\.setMaxListeners\(80\)/)
 })
 
 test('build wrapper does not invoke macOS GUI tooling unless explicitly requested', () => {
@@ -844,6 +879,7 @@ test('build wrapper does not invoke macOS GUI tooling unless explicitly requeste
 
 test('release and build paths run checks and tests before packaging', () => {
   assert.match(PACKAGE_JSON.scripts.release, /npm run check && npm test && electron-builder --publish always/)
+  assert.equal(PACKAGE_JSON.scripts['start:debug'], 'electron --remote-debugging-port=9333 .')
   assert.match(RELEASE_WORKFLOW, /name: Syntax check[\s\S]*run: npm run check/)
   assert.match(RELEASE_WORKFLOW, /name: Unit tests[\s\S]*run: npm test/)
   assert.match(RELEASE_WORKFLOW, /name: Build and publish[\s\S]*npx electron-builder --publish always/)
