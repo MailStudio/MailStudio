@@ -19,23 +19,67 @@ const snapshot = {
   sidebarCollapsed: false,
   sidebarExpandedWidth: 280,
   collapseMode: 'vanish',
+  uiDensity: 'comfortable',
+  debugging: { enabled: false },
   taskProvider: 'microsoft',
   notif: { mail: true, calendar: true, asana: true, teams: true, preview: true, quietStart: '', quietEnd: '' },
   feedPrefs: {},
-  workspaces: [],
-  recentItems: [],
-  downloadHistory: [],
+  workspaces: [{ id: 'ws-focus', name: 'Focus stack', icon: 'F', color: '#3b82f6', activeServiceKey: 'mail', splitKeys: ['mail', 'calendar'] }],
+  recentItems: [{ id: 'recent-mail', kind: 'routed-link', title: 'Budget thread', subtitle: 'Mail', url: 'https://outlook.office.com/mail/inbox/id/abc', serviceKey: 'mail', at: Date.now() }],
+  downloadHistory: [{ id: 'recent-download', kind: 'download', title: 'report.pdf', subtitle: 'Downloads', url: 'file:///tmp/report.pdf', serviceKey: 'mail', at: Date.now() - 1000 }],
   downloadPrefs: { rememberHistory: true, clearOnQuit: false },
   diagnostics: {
-    services: [],
-    connections: { microsoft: { status: 'disconnected' }, asana: { status: 'disconnected' } }
+    debugging: { enabled: false },
+    networkOnline: true,
+    prewarm: { queued: 1, active: false, currentKey: '', loaded: 3, maxLoaded: 6 },
+    services: [
+      { key: 'mail', label: 'Mail', visible: true, loaded: true, hibernated: false, snoozed: false, feedKind: 'mail', feedState: 'ok', feedItems: 2, source: 'api', lastRefreshAt: Date.now(), lastError: '', stale: false, prewarmState: 'loaded', visibleState: 'onscreen' },
+      { key: 'teams', label: 'Teams', visible: true, loaded: true, hibernated: false, snoozed: false, feedKind: '', feedState: '', feedItems: 0, source: '', lastRefreshAt: 0, lastError: '', stale: false, prewarmState: 'queued', visibleState: 'background' },
+      { key: 'asana', label: 'Asana', visible: true, loaded: true, hibernated: false, snoozed: false, feedKind: 'asana', feedState: 'ok', feedItems: 1, source: 'scraper', lastRefreshAt: Date.now(), lastError: '', stale: false, prewarmState: 'sleeping', visibleState: 'background' }
+    ],
+    sessionPartitions: [
+      { kind: 'microsoft', label: 'Microsoft', services: ['mail', 'calendar', 'teams'], recentFailures: 1 },
+      { kind: 'asana', label: 'Asana', services: ['asana'], recentFailures: 0 }
+    ],
+    microsoftAuth: {
+      loginHint: 'qa@example.com',
+      webSession: true,
+      states: [
+        { key: 'mail', label: 'Mail', authState: 'app', loaded: true, visible: true, href: 'https://outlook.office.com/mail/' },
+        { key: 'teams', label: 'Teams', authState: 'login', loaded: true, visible: true, href: 'https://login.microsoftonline.com/' }
+      ],
+      events: [
+        { id: 'auth-1', type: 'silent-failed', stage: 'silent', prompt: 'none', oauthError: 'interaction_required', message: 'Multiple accounts available', at: Date.now() - 30000 },
+        { id: 'auth-2', type: 'soft-repair', stage: 'timer', prompt: '', oauthError: '', message: 'Teams', at: Date.now() - 20000 }
+      ]
+    },
+    notifications: {
+      baselines: { mailboxes: 2, mailIds: 4, asanaIds: 1, calendarIds: 1, teamsReady: true, teamsLastCount: 1 },
+      cooldowns: [{ key: 'teams:title-count', remainingMs: 5000 }],
+      history: [
+        { id: 'notif-1', kind: 'notification-shown', title: 'Mail: New email', subtitle: 'mail · Budget thread', serviceKey: 'mail', at: Date.now() - 15000 },
+        { id: 'notif-2', kind: 'notification-suppressed', title: 'Teams: New Teams message', subtitle: 'teams · focused', serviceKey: 'teams', at: Date.now() - 12000 }
+      ]
+    },
+    serviceFailureLog: [
+      { id: 'failure-1', kind: 'service-failure', title: 'Teams page failed', subtitle: 'blank: No visible content', url: 'https://teams.cloud.microsoft/', serviceKey: 'teams', at: Date.now() - 60000 }
+    ],
+    connections: { microsoft: { status: 'connected' }, asana: { status: 'connected' } }
+  },
+  setupHealth: {
+    status: 'attention',
+    failed: 1,
+    checks: [
+      { key: 'microsoft', label: 'Microsoft account', ok: true, detail: 'Connected' },
+      { key: 'notifications', label: 'Notification arming', ok: false, detail: 'Connected providers will stay quiet until setup is enabled.', action: 'notifications' }
+    ]
   },
   firstBoot: false,
   onboarded: false,
   notifSetupSkipped: false,
   connections: {
-    microsoft: { status: 'disconnected' },
-    asana: { status: 'disconnected' },
+    microsoft: { status: 'connected', account: { email: 'qa@example.com', name: 'QA User' } },
+    asana: { status: 'connected', account: { email: 'qa@example.com', name: 'QA User' } },
     encryptionAvailable: true
   },
   connConfig: { microsoft: { clientId: '', tenant: 'common' }, asana: { clientId: '' } },
@@ -48,6 +92,17 @@ const snapshot = {
   feedCollapsed: {},
   services: [
     {
+      key: 'teams',
+      label: 'Teams',
+      icon: 'teams',
+      url: 'https://teams.cloud.microsoft/',
+      home: 'https://teams.cloud.microsoft/',
+      builtin: true,
+      visible: true,
+      unreadCount: 1,
+      feedCollapsed: false
+    },
+    {
       key: 'mail',
       label: 'Mail',
       icon: 'mail',
@@ -57,6 +112,7 @@ const snapshot = {
       visible: true,
       unreadCount: 2,
       feedCollapsed: false,
+      health: { state: 'ok', message: '', code: 0, at: Date.now() },
       feed: {
         kind: 'mail',
         state: 'ok',
@@ -125,7 +181,7 @@ window.__downloads = {
   activeCount: 1,
   list: [
     {
-      id: 'dl1',
+      id: 1,
       filename: 'report.pdf',
       state: 'progressing',
       receivedBytes: 512000,

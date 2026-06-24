@@ -48,6 +48,32 @@ test('taskProvider defaults to microsoft and rejects unknown values', () => {
   assert.equal(store.normalize({ taskProvider: 'jira' }).taskProvider, 'microsoft')
 })
 
+test('uiDensity defaults to comfortable and rejects unknown values', () => {
+  assert.equal(store.normalize(null).uiDensity, 'comfortable')
+  assert.equal(store.normalize({ uiDensity: 'compact' }).uiDensity, 'compact')
+  assert.equal(store.normalize({ uiDensity: 'tiny' }).uiDensity, 'comfortable')
+})
+
+test('debugging tools default off and failure history is bounded', () => {
+  assert.deepEqual(store.normalize(null).debugging, { enabled: false })
+  assert.deepEqual(store.normalize({ debugging: { enabled: true } }).debugging, { enabled: true })
+  assert.deepEqual(store.normalize({ debugging: true }).debugging, { enabled: false })
+
+  const serviceFailureLog = Array.from({ length: 100 }, (_value, index) => ({
+    id: `failure-${index}`,
+    title: `Failure ${index}`,
+    subtitle: 'blank',
+    url: 'https://teams.cloud.microsoft/',
+    serviceKey: 'teams',
+    at: Date.now() - index,
+    code: index
+  }))
+  const settings = store.normalize({ serviceFailureLog })
+  assert.equal(settings.serviceFailureLog.length, 80)
+  assert.equal(settings.serviceFailureLog[0].id, 'failure-0')
+  assert.equal(settings.serviceFailureLog[7].code, 7)
+})
+
 test('existing config is not flagged as first boot', () => {
   const settings = store.normalize({ firstBoot: false, onboarded: true })
   assert.equal(settings.firstBoot, false)
@@ -91,6 +117,34 @@ test('notification toggles default on, explicit false respected', () => {
   assert.equal(settings.notif.mail, false)
   assert.equal(settings.notif.calendar, true)
   assert.equal(settings.notif.preview, true)
+})
+
+test('notification engine state is bounded and sanitized', () => {
+  const settings = store.normalize({
+    notificationState: {
+      mail: {
+        primary: { ready: true, lastCount: 3, ids: Array.from({ length: 2100 }, (_v, i) => `m-${i}`) }
+      },
+      asana: { ready: true, ids: ['a-1'] },
+      calendar: { ids: ['c-1'] },
+      teams: { ready: true, lastCount: 4 },
+      history: Array.from({ length: 140 }, (_value, index) => ({
+        id: `notification-${index}`,
+        kind: 'notification-shown',
+        title: `Notification ${index}`,
+        subtitle: 'mail',
+        serviceKey: 'mail',
+        at: Date.now() - index
+      }))
+    }
+  })
+
+  assert.equal(settings.notificationState.mail.primary.ready, true)
+  assert.equal(settings.notificationState.mail.primary.ids.length, 2000)
+  assert.equal(settings.notificationState.asana.ready, true)
+  assert.deepEqual(settings.notificationState.calendar.ids, ['c-1'])
+  assert.equal(settings.notificationState.teams.lastCount, 4)
+  assert.equal(settings.notificationState.history.length, 120)
 })
 
 test('quiet hours keep only valid HH:MM values', () => {
@@ -159,9 +213,22 @@ test('tampered built-in service keys are canonicalized before URL pinning', () =
   const calendar = settings.services.find((s) => s.key === 'calendar')
   assert.equal(mail.builtin, true)
   assert.equal(mail.url, 'https://outlook.office.com/mail/')
+  assert.equal(mail.home, 'https://outlook.office.com/mail/inbox')
   assert.equal(calendar.builtin, true)
   assert.equal(calendar.url, 'https://outlook.office.com/calendar/')
   assert.equal(settings.services.filter((s) => s.key === 'mail').length, 1)
+})
+
+test('Teams uses the current cloud Microsoft endpoint even for saved built-ins', () => {
+  const settings = store.normalize({
+    services: [
+      { key: 'teams', label: 'Teams', url: 'https://teams.microsoft.com/', home: 'https://teams.microsoft.com/' }
+    ]
+  })
+  const teams = settings.services.find((s) => s.key === 'teams')
+
+  assert.equal(teams.url, 'https://teams.cloud.microsoft/')
+  assert.equal(teams.home, 'https://teams.cloud.microsoft/')
 })
 
 test('custom pinned services are capped on import', () => {

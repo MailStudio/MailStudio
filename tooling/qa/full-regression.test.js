@@ -17,6 +17,7 @@ const CONNECTIONS_JS = lf(fs.readFileSync(path.join(ROOT, 'src', 'main', 'connec
 const OAUTH_JS = lf(fs.readFileSync(path.join(ROOT, 'src', 'main', 'oauth.js'), 'utf8'))
 const MENU_JS = lf(fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'menu.js'), 'utf8'))
 const UPDATER_JS = lf(fs.readFileSync(path.join(ROOT, 'src', 'main', 'updater.js'), 'utf8'))
+const LIVE_CDP_CHECK_JS = lf(fs.readFileSync(path.join(ROOT, 'tooling', 'qa', 'live-cdp-check.js'), 'utf8'))
 const BUILD_SH = lf(fs.readFileSync(path.join(ROOT, 'build.sh'), 'utf8'))
 const DEV_DOCS = lf(fs.readFileSync(path.join(ROOT, 'docs', 'development.md'), 'utf8'))
 const SECURITY_DOCS = lf(fs.readFileSync(path.join(ROOT, 'docs', 'security.md'), 'utf8'))
@@ -60,6 +61,7 @@ function mockJsonResponse(status, body, headers) {
 
 test('settings normalize persists the expanded QoL surface', () => {
   const settings = store.normalize({
+    uiDensity: 'compact',
     notif: {
       quietStart: '22:00',
       quietEnd: '08:00',
@@ -82,12 +84,13 @@ test('settings normalize persists the expanded QoL surface', () => {
       splitRatio: 0.7,
       zoomLevels: { mail: 1.5 }
     },
-    workspaces: [{ id: 'w1', name: 'Focus', splitKeys: ['mail', 'calendar'] }],
+    workspaces: [{ id: 'w1', name: 'Focus', icon: 'FX', color: '#16A34A', splitKeys: ['mail', 'calendar'] }],
     recentItems: [{ id: 'r1', title: 'Recent', url: 'https://example.com' }],
     downloadHistory: [{ id: 'd1', title: 'Archive', url: 'https://example.com/file.zip' }]
   })
 
   assert.equal(settings.notif.quietWeekends, true)
+  assert.equal(settings.uiDensity, 'compact')
   assert.equal(settings.notif.quietAllowCalendar, true)
   assert.equal(settings.feedPrefs.hidePreviews, true)
   assert.equal(settings.downloads.rememberHistory, false)
@@ -98,6 +101,8 @@ test('settings normalize persists the expanded QoL surface', () => {
   assert.equal(settings.layout.splitRatio, 0.7)
   assert.equal(settings.layout.zoomLevels.mail, 1.5)
   assert.equal(settings.workspaces[0].name, 'Focus')
+  assert.equal(settings.workspaces[0].icon, 'FX')
+  assert.equal(settings.workspaces[0].color, '#16a34a')
   assert.equal(settings.recentItems[0].title, 'Recent')
   assert.equal(settings.downloadHistory[0].title, 'Archive')
 })
@@ -144,6 +149,11 @@ test('mail sidebar sources fetch only the latest 10 messages', () => {
   const block = MAIN_JS.match(/const MAIL_SCRAPE = `\(\(\) => \{([\s\S]*?)\n\}\)\(\)`/)
   assert.ok(block, 'MAIL_SCRAPE missing')
   assert.match(block[1], /if \(items\.length >= 10\) break/)
+  assert.match(block[1], /row\.getAttribute\('aria-selected'\) === 'true'/)
+  assert.doesNotMatch(block[1], /row\.hasAttribute\('aria-selected'\)/)
+  assert.match(block[1], /const selectedInboxUnread = \(\) => \{/)
+  assert.match(block[1], /return \{ state: items\.length \? 'ok' : 'empty', items, unreadCount: folderUnread \}/)
+  assert.match(block[1], /id: 'inbox-unread-count\\\\x00' \+ folderUnread/)
 })
 
 test('fetchAsanaTasks preserves a per-task permalink for every API item', async () => {
@@ -286,6 +296,35 @@ test('Microsoft suite auth keeps legacy and new login hosts inside the shared se
   assert.match(MAIN_JS, /popupHost === 'login\.windows\.net'/)
 })
 
+test('Microsoft OAuth prefers silent and hinted SSO before account picker', () => {
+  assert.match(OAUTH_JS, /class AuthorizationError extends Error/)
+  assert.match(OAUTH_JS, /params\.prompt = authPrompt/)
+  assert.match(OAUTH_JS, /params\.login_hint = loginHint\.trim\(\)/)
+  assert.match(OAUTH_JS, /const quiet = provider === 'microsoft' && authPrompt === 'none'/)
+  assert.match(OAUTH_JS, /silent_timeout/)
+  assert.doesNotMatch(OAUTH_JS, /params\.prompt = 'select_account'/)
+  assert.match(CONNECTIONS_JS, /prompt: 'none'/)
+  assert.match(CONNECTIONS_JS, /prompt: loginHint \? '' : 'select_account'/)
+  assert.match(CONNECTIONS_JS, /SILENT_FALLBACK_AUTH_ERRORS/)
+  assert.match(MAIN_JS, /loginHint: command\.provider === 'microsoft' \? microsoftLoginHint\(\) : ''/)
+  assert.match(MAIN_JS, /onAuthEvent: recordMicrosoftAuthEvent/)
+  assert.match(MAIN_JS, /function withMicrosoftLoginHint\(service, url\)/)
+  assert.match(MAIN_JS, /parsed\.searchParams\.set\('login_hint', hint\)/)
+  assert.match(MAIN_JS, /function serviceHomeTarget\(service\)/)
+  assert.match(MAIN_JS, /function serviceInitialTarget\(service\)/)
+  assert.match(MAIN_JS, /safeLoadURL\(webContents, serviceHomeTarget\(service\)\)/)
+  assert.match(MAIN_JS, /safeLoadURL\(contents, serviceInitialTarget\(service\)\)/)
+})
+
+test('setup health treats a Microsoft web session as signed in even without Graph API', () => {
+  assert.match(MAIN_JS, /function hasMicrosoftWebSession\(\)/)
+  assert.match(MAIN_JS, /microsoftAuthState\.get\(service\.key\) === 'app'/)
+  assert.match(MAIN_JS, /const microsoftApiConnected = conn\.microsoft && conn\.microsoft\.status === 'connected'/)
+  assert.match(MAIN_JS, /const microsoftWebSession = hasMicrosoftWebSession\(\)/)
+  assert.match(MAIN_JS, /microsoftApiConnected \|\| microsoftWebSession/)
+  assert.match(MAIN_JS, /Signed in through Microsoft web session/)
+})
+
 test('generic Microsoft 365 URLs no longer forward clicks to the Copilot tab', () => {
   assert.match(MAIN_JS, /const appMatch = route\.match\(\/\\\/launch\\\/\(word\|excel\|powerpoint\|onenote\|onedrive\|sharepoint\)\/i\)/)
   assert.match(MAIN_JS, /if \(appMatch\) return findOrReveal\(appMatch\[1\]\.toLowerCase\(\)\)/)
@@ -303,8 +342,27 @@ test('shared mailbox feeds bypass the primary Microsoft Graph mail feed', () => 
 test('mail notification baselines are tracked per service key', () => {
   assert.match(MAIN_JS, /const mailNotificationState = new Map\(\)/)
   assert.match(MAIN_JS, /function mailNotifyState\(serviceKey\)/)
-  assert.match(MAIN_JS, /diffAndNotifyMail\(items, unreadCount, serviceKey = 'mail'\)/)
+  assert.match(MAIN_JS, /diffAndNotifyMail\(items, unreadCount, serviceKey = 'mail', options = \{\}\)/)
   assert.match(MAIN_JS, /showService\(serviceKey\)/)
+})
+
+test('notification engine centralizes dispatch, audit, cooldowns, and persisted baselines', () => {
+  assert.match(SETTINGS_STORE_JS, /notificationState: \{[\s\S]*mail: \{\}[\s\S]*history: \[\]/)
+  assert.match(SETTINGS_STORE_JS, /settings\.notificationState = \{[\s\S]*history: cleanRecents\(rawNotificationState\.history, 120\)/)
+  assert.match(MAIN_JS, /const NOTIFICATION_KIND_COOLDOWN_MS = \{[\s\S]*teams: 12000/)
+  assert.match(MAIN_JS, /const notificationCooldownUntil = new Map\(\)/)
+  assert.match(MAIN_JS, /function dispatchNotification\(candidate, onClick\)/)
+  assert.match(MAIN_JS, /function recordNotificationEvent\(status, candidate, reason = ''\)/)
+  assert.match(MAIN_JS, /function serializeNotificationState\(\)/)
+  assert.match(MAIN_JS, /function restoreNotificationEngineState\(\)/)
+  assert.match(MAIN_JS, /restoreNotificationEngineState\(\)/)
+  assert.match(MAIN_JS, /function getNotificationDiagnostics\(\)/)
+  assert.match(MAIN_JS, /notifications: settings\.debugging && settings\.debugging\.enabled \? getNotificationDiagnostics\(\)/)
+  assert.match(PANEL_HTML, /id="debug-notification-list"/)
+  assert.match(PANEL_JS, /const notificationDiag = diag\.notifications \|\| \{\}/)
+  const teamsBlock = MAIN_JS.match(/function maybeNotifyTeams\(unreadCount\) \{([\s\S]*?)\n\}/)
+  assert.ok(teamsBlock, 'maybeNotifyTeams missing')
+  assert.match(teamsBlock[1], /activeServiceKey === 'teams'[\s\S]*lastTeamsNotificationCount = 0[\s\S]*persistNotificationState\(\)/)
 })
 
 test('mail notifications require a newly identified message, not just count churn', () => {
@@ -313,12 +371,16 @@ test('mail notifications require a newly identified message, not just count chur
 })
 
 test('mail notification baselines treat inbox zero and suppressed mail as seen', () => {
-  const block = MAIN_JS.match(/function diffAndNotifyMail\(items, unreadCount, serviceKey = 'mail'\) \{([\s\S]*?)\nfunction maybeNotifyTeams/)
+  const block = MAIN_JS.match(/function diffAndNotifyMail\(items, unreadCount, serviceKey = 'mail', options = \{\}\) \{([\s\S]*?)\nfunction maybeNotifyTeams/)
   assert.ok(block, 'diffAndNotifyMail missing')
+  assert.match(block[1], /const knownEmptyBaseline = Boolean\(options\.knownEmptyBaseline\)/)
+  assert.match(block[1], /if \(!state\.ready && !hasItems && !knownEmptyBaseline\) return/)
   assert.match(block[1], /if \(unreadCount === 0\) \{[\s\S]*state\.ready = true/)
   assert.match(MAIN_JS, /function markMailItemsSeen\(state, items\)/)
-  assert.match(block[1], /const suppress = \(message\) => \{[\s\S]*markMailItemsSeen\(state, items\)/)
-  assert.match(block[1], /activeServiceKey === serviceKey\) \{ suppress\(\); return \}/)
+  assert.match(block[1], /const suppress = \(reason\) => \{[\s\S]*markMailItemsSeen\(state, items\)/)
+  assert.match(block[1], /persistNotificationState\(\)/)
+  assert.match(block[1], /dispatchNotification\(/)
+  assert.match(MAIN_JS, /candidate\.suppressWhenFocused !== false && panelWindow && panelWindow\.isFocused\(\) && activeServiceKey === candidate\.serviceKey/)
 })
 
 test('settings pages declared in HTML match PAGE_TITLES entries in the renderer', () => {
@@ -380,6 +442,22 @@ test('transient overlays have both open and close handlers so BrowserViews can d
   assert.match(MAIN_JS, /case 'close-transient-overlay':/)
   assert.match(PANEL_JS, /window\.panelApi\.sendCommand\(\{ type: 'open-transient-overlay' \}\)/)
   assert.match(PANEL_JS, /window\.panelApi\.sendCommand\(\{ type: 'close-transient-overlay' \}\)/)
+})
+
+test('command search and shortcut guide popups are centered in the viewport', () => {
+  const overlayRule = PANEL_CSS.match(/\.overlay-panel \{([\s\S]*?)\n\}/)
+  assert.ok(overlayRule, 'overlay panel rule missing')
+  assert.match(overlayRule[1], /place-items: center;/)
+  assert.match(overlayRule[1], /padding: 24px;/)
+  assert.match(overlayRule[1], /box-sizing: border-box;/)
+
+  const commandRule = PANEL_CSS.match(/\.command-card \{([\s\S]*?)\n\}/)
+  assert.ok(commandRule, 'command card rule missing')
+  assert.match(commandRule[1], /width: min\(560px, 100%\);/)
+
+  const shortcutRule = PANEL_CSS.match(/\.shortcut-card \{([\s\S]*?)\n\}/)
+  assert.ok(shortcutRule, 'shortcut card rule missing')
+  assert.match(shortcutRule[1], /width: min\(680px, 100%\);/)
 })
 
 test('transient overlay commands are emitted only when overlay visibility changes', () => {
@@ -499,6 +577,10 @@ test('custom site partition names are sanitized before Electron session use', ()
 test('Outlook mailbox URLs prefer the matching managed mailbox before primary Mail', () => {
   const block = MAIN_JS.match(/function coreServiceForUrl\(urlString\) \{([\s\S]*?)\nfunction resolveServiceByUrl/)
   assert.ok(block, 'coreServiceForUrl missing')
+  assert.match(MAIN_JS, /function isOutlookMailHost\(host\)/)
+  assert.match(MAIN_JS, /value === 'outlook\.cloud\.microsoft'/)
+  assert.match(MAIN_JS, /value\.endsWith\('\.outlook\.cloud\.microsoft'\)/)
+  assert.match(block[1], /const isOutlookHost = isOutlookMailHost\(host\)/)
   assert.match(block[1], /const mailbox = settings\.services\.find/)
   assert.match(block[1], /isMailboxService\(service\)/)
   assert.match(block[1], /targetSameOriginAndPathPrefix\(parsed, current\)/)
@@ -513,7 +595,7 @@ test('discovered primary Outlook folder URLs are not duplicated as managed mailb
   assert.match(block[1], /const isPrimaryMailboxUrl = \(value\) =>/)
   assert.match(block[1], /const candidates = \[\]/)
   assert.match(block[1], /if \(!discoveredUrl \|\| isPrimaryMailboxUrl\(discoveredUrl\)\) continue/)
-  assert.match(block[1], /const discoveredKeys = new Set\(candidates\.map/)
+  assert.match(block[1], /mb\.primaryAccount \|\| \(mbEmail && primaryEmails\.has\(mbEmail\)\) \|\| looksLikeNamedPrimary/)
   assert.match(block[1], /\['inbox', 'deeplink', 'id', 'sentitems', 'drafts', 'archive', 'deleteditems', 'junkemail'\]/)
 })
 
@@ -585,14 +667,29 @@ test('notification toggles are disabled while their provider is disconnected', (
   assert.match(PANEL_JS, /if \(btn\.disabled\) return/)
 })
 
-test('restored API connections arm notifications before snapshots', () => {
-  assert.match(MAIN_JS, /function hasConnectedApiProvider\(\)/)
-  assert.match(MAIN_JS, /\['microsoft', 'asana'\]\.some/)
+test('notifications are armed automatically before snapshots', () => {
   assert.match(MAIN_JS, /function armNotificationsForConnectedProviders\(\)/)
   assert.match(MAIN_JS, /store\.save\(\{ \.\.\.settings, onboarded: true, notifSetupSkipped: false \}\)/)
   const pushBlock = MAIN_JS.match(/function pushSnapshot\(\) \{([\s\S]*?)\n  const snapshot = getSnapshot\(\)/)
   assert.ok(pushBlock, 'pushSnapshot missing')
   assert.match(pushBlock[1], /armNotificationsForConnectedProviders\(\)/)
+  assert.doesNotMatch(MAIN_JS, /if \(!settings\.onboarded\) return 'not onboarded'/)
+  assert.match(MAIN_JS, /Notifications are armed automatically\./)
+  assert.match(PANEL_JS, /warn\.hidden = true/)
+  assert.match(PANEL_JS, /el\.hidden = true/)
+})
+
+test('Asana API failures are classified and can fall back to web scrape', () => {
+  assert.match(API_FEEDS_JS, /class ApiError extends Error/)
+  assert.match(API_FEEDS_JS, /throw new ApiError\([^)]*res\.status/)
+  assert.match(CONNECTIONS_JS, /Asana API task access is blocked/)
+  assert.match(CONNECTIONS_JS, /trial or workspace permission changed/)
+  assert.match(CONNECTIONS_JS, /Asana API timed out/)
+  assert.match(MAIN_JS, /function refreshFeedFromScrape\(key, feed, options = \{\}\)/)
+  assert.match(MAIN_JS, /feed\.kind === 'asana' && result\.state === 'error'/)
+  assert.match(MAIN_JS, /refreshFeedFromScrape\(key, feed, \{ ignoreApiOwnership: true, apiFallback: true \}\)/)
+  assert.match(MAIN_JS, /recordServiceFailure\(key, 'asana-api'/)
+  assert.match(MAIN_JS, /recordServiceFailure\(key, 'asana-api-fallback'/)
 })
 
 test('provider connect buttons disable immediately and main ignores duplicate connects', () => {
@@ -608,12 +705,33 @@ test('provider connect buttons disable immediately and main ignores duplicate co
 test('discovered mailbox URLs are pinned to the primary Outlook origin', () => {
   const block = MAIN_JS.match(/function syncDiscoveredMailboxes\(mailboxes, discoveredPrimaryEmail = ''\) \{([\s\S]*?)\n\}/)
   assert.ok(block, 'syncDiscoveredMailboxes missing')
+  assert.match(block[1], /const mailHosts = new Set\(\)/)
+  assert.match(block[1], /addMailHost\(serviceState\.mail && serviceState\.mail\.href\)/)
   assert.match(block[1], /const safeMailboxUrl = \(value\) =>/)
   assert.match(block[1], /parsed\.protocol !== 'https:'/)
-  assert.match(block[1], /parsed\.hostname\.toLowerCase\(\) !== mailHost/)
+  assert.match(block[1], /!mailHosts\.has\(parsed\.hostname\.toLowerCase\(\)\)/)
   // A mailbox whose URL fails validation is dropped, not persisted.
   assert.match(block[1], /const discoveredUrl = safeMailboxUrl\(mb\.url\)/)
   assert.match(block[1], /if \(!discoveredUrl \|\| isPrimaryMailboxUrl\(discoveredUrl\)\) continue/)
+})
+
+test('mailbox discovery timer tolerates stale BrowserViews', () => {
+  assert.match(MAIN_JS, /function liveWebContents\(view\)/)
+  const block = MAIN_JS.match(/function discoverMailboxes\(\) \{([\s\S]*?)\nfunction scheduleMailboxDiscover/)
+  assert.ok(block, 'discoverMailboxes missing')
+  assert.match(block[1], /const contents = liveWebContents\(view\)/)
+  assert.match(block[1], /if \(!contents\) return/)
+  assert.match(block[1], /contents[\s\S]*\.executeJavaScript\(MAILBOX_DISCOVER, true\)/)
+  assert.doesNotMatch(block[1], /view\.webContents\.isDestroyed/)
+  assert.doesNotMatch(block[1], /view\.webContents[\s\S]*executeJavaScript\(MAILBOX_DISCOVER/)
+})
+
+test('partial mailbox discovery never deletes existing shared inbox tabs', () => {
+  const block = MAIN_JS.match(/function syncDiscoveredMailboxes\(mailboxes, discoveredPrimaryEmail = ''\) \{([\s\S]*?)\nfunction prunePrimaryMailboxDuplicates/)
+  assert.ok(block, 'syncDiscoveredMailboxes missing')
+  assert.match(block[1], /const services = settings\.services\.slice\(\)/)
+  assert.doesNotMatch(block[1], /settings\.services\.filter\(\(service\) => \{[\s\S]*service\.mailboxManaged[\s\S]*return false/)
+  assert.doesNotMatch(block[1], /discoveredKeys/)
 })
 
 test('managed mailbox tabs keep broad mailbox routing but canonicalize home to inbox', () => {
@@ -626,10 +744,14 @@ test('managed mailbox tabs keep broad mailbox routing but canonicalize home to i
   assert.match(block[1], /const home = mailboxHomeUrl\(origin, mbEmail\) \|\| safeMailboxUrl\(mb\.home\) \|\| discoveredUrl/)
 })
 
-test('managed mailbox first load prefers its inbox home over the broader mailbox root', () => {
+test('mail first load prefers inbox home over the broader mailbox root', () => {
   const block = MAIN_JS.match(/function ensureServiceLoaded\(key\) \{([\s\S]*?)\n\}/)
   assert.ok(block, 'ensureServiceLoaded missing')
-  assert.match(block[1], /service\.mailboxManaged \? \(service\.home \|\| service\.url\) : service\.url/)
+  assert.match(block[1], /serviceInitialTarget\(service\)/)
+  const initialBlock = MAIN_JS.match(/function serviceInitialTarget\(service\) \{([\s\S]*?)\n\}/)
+  assert.ok(initialBlock, 'serviceInitialTarget missing')
+  assert.match(initialBlock[1], /service\.key === 'mail' \|\| service\.mailboxManaged/)
+  assert.match(SETTINGS_STORE_JS, /home: 'https:\/\/outlook\.office\.com\/mail\/inbox'/)
 })
 
 test('shared mailbox scrape results are accepted even when the primary Graph mail feed is live', () => {
@@ -650,11 +772,14 @@ test('shared mailbox scrape results are accepted even when the primary Graph mai
   assert.doesNotMatch(refreshFeedsBlock[1], /connections\.feedIsLive\(kind\)/)
 })
 
-test('shared mailbox scrape unread count uses unread rows, not all recent rows', () => {
-  const block = MAIN_JS.match(/if \(feed\.kind === 'mail'\) \{([\s\S]*?)diffAndNotifyMail\(feed\.items, visibleUnread, key\)/)
+test('scraped mail unread count uses unread rows, not title count or all recent rows', () => {
+  const block = MAIN_JS.match(/const scrapedUnread = feed\.items\.filter\(\(item\) => item && item\.isRead === false\)\.length([\s\S]*?)diffAndNotifyMail\(feed\.items, visibleUnread, key, \{/)
   assert.ok(block, 'scraped mail branch missing')
-  assert.match(block[1], /const scrapedUnread = feed\.items\.filter\(\(item\) => item && item\.isRead === false\)\.length/)
+  assert.match(block[1], /const folderUnread = result && typeof result\.unreadCount === 'number'/)
+  assert.match(block[1], /const visibleUnread = folderUnread === null \? scrapedUnread : Math\.max\(folderUnread, scrapedUnread\)/)
+  assert.doesNotMatch(block[1], /service && service\.mailboxManaged\s*\?\s*scrapedUnread/)
   assert.match(block[1], /mailState\.unreadCount = visibleUnread/)
+  assert.match(MAIN_JS, /knownEmptyBaseline: key === activeServiceKey && panelWindow && panelWindow\.isFocused\(\)/)
   assert.match(block[1], /changed = true/)
 })
 
@@ -703,12 +828,13 @@ test('the Copilot tab is preserved as a hidden built-in service', () => {
   assert.equal(office.visible, false)
 })
 
-test('Office app tabs may use the Microsoft 365 launcher but core tabs may not drift there', () => {
+test('launcher-capable apps may use Microsoft 365 bootstrap while core tabs stay pinned', () => {
   assert.match(MAIN_JS, /function isMicrosoft365HomeUrl\(urlString\)/)
   assert.match(MAIN_JS, /const MICROSOFT_365_LAUNCHER_KEYS = new Set/)
   assert.match(MAIN_JS, /function canUseMicrosoft365Launcher\(service\)/)
-  // Direct navigations and server redirects are cancelled for Mail/Calendar/Teams
-  // style tabs, but Word/Excel/PowerPoint/etc. can pass through the launcher.
+  assert.match(MAIN_JS, /const MICROSOFT_365_LAUNCHER_KEYS = new Set\(\[\s*'teams'/)
+  // Direct navigations and server redirects are still cancelled for Mail/Calendar
+  // style tabs, but Teams and Office apps can pass through the launcher.
   const navBlock = MAIN_JS.match(/const handleNavRequest = \(event, url\) => \{([\s\S]*?)\n  \}/)
   assert.ok(navBlock, 'handleNavRequest missing')
   assert.match(navBlock[1], /if \(!canUseMicrosoft365Launcher\(service\) && isMicrosoft365HomeUrl\(url\)\) \{\s*event\.preventDefault\(\)\s*return/)
@@ -727,6 +853,100 @@ test('Planner default uses the current cloud Microsoft host', () => {
   assert.equal(planner.url, 'https://planner.cloud.microsoft/')
   assert.equal(planner.home, 'https://planner.cloud.microsoft/')
   assert.doesNotMatch(SETTINGS_STORE_JS, /https:\/\/planner\.microsoft\.com\//)
+})
+
+test('Teams default uses the cloud Microsoft host', () => {
+  const fresh = store.normalize(null)
+  const teams = fresh.services.find((s) => s.key === 'teams')
+  assert.ok(teams, 'Teams tab missing from defaults')
+  assert.equal(teams.url, 'https://teams.cloud.microsoft/')
+  assert.equal(teams.home, 'https://teams.cloud.microsoft/')
+})
+
+test('Teams email-share links from mail route directly to the Teams tab', () => {
+  assert.match(MAIN_JS, /function isTeamsEmailShareLink\(urlString\)/)
+  assert.match(MAIN_JS, /\/\^\\\/l\\\/share-email\(\?:\\\/\|\$\)\/i/)
+  assert.match(MAIN_JS, /\/\^\\\/dl\\\/launcher\\\/launcher\\\.html\$\/i/)
+  assert.match(MAIN_JS, /launcherType === 'share-email'/)
+  assert.match(MAIN_JS, /function shouldConfirmTeamsNavigation\(url, sourceService\)/)
+  assert.match(MAIN_JS, /return !isTeamsEmailShareLink\(url\)/)
+  const guardedRoutes = [...MAIN_JS.matchAll(/internalService\.key === 'teams' && shouldConfirmTeamsNavigation\(url, service\)/g)]
+  assert.equal(guardedRoutes.length, 2)
+  assert.match(MAIN_JS, /else \{\s*routeToService\(internalService, url\)\s*\}/)
+})
+
+test('blank-page health only reports for onscreen tabs or Teams', () => {
+  assert.match(MAIN_JS, /const BLANK_HEALTH_SWEEP_MS = 10000/)
+  assert.match(MAIN_JS, /const lastBlankHealthAt = \{\}/)
+  assert.match(MAIN_JS, /function shouldReportBlankLoad\(serviceKey\)/)
+  assert.match(MAIN_JS, /if \(serviceKey === 'teams'\) return true/)
+  assert.match(MAIN_JS, /return Boolean\(serviceState\[serviceKey\] && serviceState\[serviceKey\]\.visible\)/)
+  assert.match(MAIN_JS, /function checkServiceBlankHealth\(service, reason = 'timer'\)/)
+  assert.match(MAIN_JS, /if \(!service \|\| !shouldReportBlankLoad\(service\.key\)\) return false[\s\S]*state: 'blank'/)
+  assert.match(MAIN_JS, /const currentView = serviceViews\.get\(service\.key\)/)
+  assert.match(MAIN_JS, /const currentContents = currentView && currentView\.webContents/)
+  assert.match(MAIN_JS, /function maybeClickTeamsRecoveryAction\(serviceKey, health\)/)
+  assert.match(MAIN_JS, /document\.getElementById\('error-action-clear-cache'\)/)
+  assert.match(MAIN_JS, /recordServiceFailure\([\s\S]*'teams-recovery'/)
+  assert.match(MAIN_JS, /const preserveTeamsBlank =[\s\S]*service\.key === 'teams'[\s\S]*\['blank', 'failed', 'safe-mode'\]\.includes\(previousHealth\.state\)/)
+  assert.match(MAIN_JS, /if \(service\.key !== 'teams'\) clearServiceHealth\(service\.key\)/)
+  assert.match(MAIN_JS, /serviceState\[service\.key\]\.health\.state !== 'ok'/)
+  assert.match(MAIN_JS, /const visibleContentArea = Array\.from/)
+  assert.match(MAIN_JS, /hasVisibleContent: text\.length > 0 \|\| visibleContentArea > 1000/)
+  assert.match(MAIN_JS, /const teamsBlankShell =[\s\S]*service\.key === 'teams'[\s\S]*!health\.hasVisibleContent \|\| health\.hasTeamsClearCache \|\| health\.hasTeamsRetry/)
+  assert.match(MAIN_JS, /const healthyContent = service\.key === 'teams'[\s\S]*\? health\.hasVisibleContent/)
+  assert.match(MAIN_JS, /if \(teamsBlankShell && maybeClickTeamsRecoveryAction\(service\.key, health\)\) return/)
+  assert.match(MAIN_JS, /Teams loaded its shell without chat content\./)
+  assert.match(MAIN_JS, /Teams could not be inspected during blank-page health check\./)
+  assert.match(MAIN_JS, /service\.key !== 'teams' && currentContents\.isLoading\(\)/)
+  assert.match(MAIN_JS, /now - \(lastBlankHealthAt\[service\.key\] \|\| 0\) < BLANK_HEALTH_SWEEP_MS/)
+  assert.match(MAIN_JS, /checkServiceBlankHealth\(service, 'timer'\)/)
+  assert.doesNotMatch(MAIN_JS, /setTimeout\(\(\) => \{\s*if \(view\.webContents\.isDestroyed\(\)\) return/)
+  assert.doesNotMatch(LIVE_CDP_CHECK_JS, /!service\.host\.includes\('teams\.'\)/)
+})
+
+test('stability debugging exposes tab observability behind an explicit setting', () => {
+  assert.match(SETTINGS_STORE_JS, /debugging: \{\s*enabled: false\s*\}/)
+  assert.match(SETTINGS_STORE_JS, /settings\.serviceFailureLog = cleanRecents\(raw && raw\.serviceFailureLog, 80\)/)
+  assert.match(MAIN_JS, /const STALE_FEED_MS = 7 \* 60 \* 1000/)
+  assert.match(MAIN_JS, /serviceFailureLog: settings\.debugging && settings\.debugging\.enabled \?/)
+  assert.match(MAIN_JS, /function recordDebugEvent\(kind, title/)
+  assert.match(MAIN_JS, /recordServiceFailure\(key, 'feed-stale'/)
+  assert.match(MAIN_JS, /recordServiceFailure\(key, 'prewarm-timeout'/)
+  assert.match(MAIN_JS, /recordDebugEvent\('network-offline'/)
+  assert.match(MAIN_JS, /function buildDebugReport\(\)/)
+  assert.match(MAIN_JS, /microsoftAuthEvents: microsoftAuthEvents\.slice/)
+  assert.match(MAIN_JS, /microsoftAuth: settings\.debugging && settings\.debugging\.enabled \? getMicrosoftAuthDiagnostics\(\)/)
+  assert.match(MAIN_JS, /case 'export-debug-report':/)
+  assert.match(MAIN_JS, /prewarmState: prewarmCurrentKey === service\.key/)
+  assert.match(MAIN_JS, /visibleState: \(serviceState\[service\.key\] \|\| \{\}\)\.visible \? 'onscreen' : 'background'/)
+  assert.match(PANEL_HTML, /id="set-page-debugging"/)
+  assert.match(PANEL_HTML, /id="debug-auth-list"/)
+  assert.match(PANEL_HTML, /id="export-debug-report"/)
+  assert.match(PANEL_JS, /function renderDebugging\(snapshot\)/)
+  assert.match(PANEL_JS, /const auth = diag\.microsoftAuth \|\| \{\}/)
+  assert.match(PANEL_JS, /repair-partition', partition: 'microsoft'/)
+  assert.match(PANEL_JS, /repair-partition', partition: 'asana'/)
+  assert.match(PANEL_JS, /clear-failure-log/)
+  assert.match(PANEL_JS, /export-debug-report/)
+})
+
+test('Microsoft session repair is soft before destructive clear-session repair', () => {
+  assert.match(MAIN_JS, /const MICROSOFT_SESSION_HEALTH_MS = 2 \* 60 \* 1000/)
+  assert.match(MAIN_JS, /function runMicrosoftSessionHealthSweep\(reason = 'timer'\)/)
+  assert.match(MAIN_JS, /function softRepairMicrosoftService\(service, reason = 'manual'/)
+  assert.match(MAIN_JS, /serviceHomeTarget\(service\)/)
+  assert.match(MAIN_JS, /case 'network-online':[\s\S]*runMicrosoftSessionHealthSweep\('network-online'\)/)
+  assert.match(MAIN_JS, /startMicrosoftSessionHealthTimer\(\)/)
+  const partitionBlock = MAIN_JS.match(/function repairPartition\(kind\) \{([\s\S]*?)const partition =/)
+  assert.ok(partitionBlock, 'repairPartition missing')
+  assert.match(partitionBlock[1], /if \(kind === 'microsoft'\)/)
+  assert.match(partitionBlock[1], /runMicrosoftSessionHealthSweep\('manual-repair'\)/)
+  assert.doesNotMatch(partitionBlock[1], /clearStorageData/)
+  assert.match(MAIN_JS, /function forceUnloadServiceView\(key\) \{/)
+  const clearSessionBlock = MAIN_JS.match(/if \(action === 'clear-session'\) \{([\s\S]*?)\n  \}/)
+  assert.ok(clearSessionBlock, 'clear-session repair action missing')
+  assert.match(clearSessionBlock[1], /forceUnloadServiceView\(serviceKey\)/)
 })
 
 test('the signed-in mailbox address is captured so it can be de-duplicated from shared mailboxes', () => {
@@ -777,7 +997,7 @@ test('the built-in Mail row displays the signed-in primary mailbox identity', ()
   assert.match(syncBlock[1], /const primaryIdentityChanged = rememberDiscoveredPrimaryMailEmail\(discoveredPrimaryEmail\)/)
   assert.match(syncBlock[1], /else if \(primaryIdentityChanged\) pushSnapshot\(\)/)
 
-  const snapshotBlock = MAIN_JS.match(/function getSnapshot\(\) \{([\s\S]*?)\nfunction hasConnectedApiProvider/)
+  const snapshotBlock = MAIN_JS.match(/function getSnapshot\(\) \{([\s\S]*?)\nfunction armNotificationsForConnectedProviders/)
   assert.ok(snapshotBlock, 'getSnapshot missing')
   assert.match(snapshotBlock[1], /const label = serviceDisplayLabel\(service\)/)
   assert.match(snapshotBlock[1], /label,/)
@@ -794,6 +1014,7 @@ test('Outlook mailbox discovery marks the profile account as primary', () => {
   assert.ok(block, 'MAILBOX_DISCOVER missing')
   assert.match(block[1], /let primaryEmail = ''/)
   assert.match(block[1], /O365_MainLink_Me/)
+  assert.match(block[1], /outlook\\\\\.cloud\\\\\.microsoft/)
   assert.match(block[1], /\[aria-label\*="Account manager" i\]/)
   assert.match(block[1], /const allTreeItems = Array\.from\(document\.querySelectorAll\('\[role="treeitem"\]'\)\)/)
   assert.match(block[1], /selected && currentRootEmail && .*inbox/)
@@ -861,7 +1082,7 @@ test('tray dropdown status sums unread across every mail service', () => {
 
 test('home and external-open commands tolerate missing active service state', () => {
   assert.match(MAIN_JS, /function activeServiceHref\(\)/)
-  assert.match(MAIN_JS, /safeLoadURL\(webContents, service\.home \|\| service\.url\)/)
+  assert.match(MAIN_JS, /safeLoadURL\(webContents, serviceHomeTarget\(service\)\)/)
   assert.match(MAIN_JS, /openExternalSafe\(activeServiceHref\(\)\)/)
   assert.doesNotMatch(MAIN_JS, /openExternalSafe\(serviceState\[activeServiceKey\]\.href\)/)
 })

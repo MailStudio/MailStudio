@@ -41,11 +41,27 @@ const PREWARM_BOOT_DELAY_MS = 3000     // let the active tab settle before prewa
 const PREWARM_SETTLE_MS = 5000         // gap between staggered prewarm loads
 const PREWARM_TIMEOUT_MS = 20000       // give up on a stalled load, move to next
 const MICROSOFT_REFRESH_COOLDOWN_MS = 45000 // avoid reload loops after SSO redirects
+const MICROSOFT_SESSION_HEALTH_MS = 2 * 60 * 1000
+const MICROSOFT_SESSION_HEALTH_BOOT_DELAY_MS = 30000
+const BLANK_HEALTH_SWEEP_MS = 10000
 const HIDDEN_SCRAPE_MS = 50000         // min gap between scrapes of a hidden view
 const HIDDEN_MAIL_SCRAPE_MS = 12000    // mail notifications should feel live even off-screen
+const STALE_FEED_MS = 7 * 60 * 1000
 const HIBERNATE_IDLE_MS = 15 * 60 * 1000 // idle time before an eligible view sleeps
 const REAPER_MS = 60000                // hibernation sweep interval
 const REPO_URL = 'https://github.com/MailStudio/MailStudio'
+const SERVICE_FAILURE_LOG_MAX = 80
+const MICROSOFT_AUTH_EVENT_MAX = 80
+const NOTIFICATION_HISTORY_MAX = 120
+const NOTIFICATION_KIND_COOLDOWN_MS = {
+  mail: 8000,
+  teams: 12000,
+  asana: 8000,
+  calendar: 0
+}
+const CRASH_WINDOW_MS = 5 * 60 * 1000
+const CRASH_COOLDOWN_THRESHOLD = 3
+const TEAMS_FALLBACK_URLS = ['https://teams.cloud.microsoft/', 'https://teams.microsoft.com/']
 
 // Derived at runtime from the real Chromium UA so the platform token and the
 // Chrome version stay correct as Electron updates. Only the Electron and
@@ -64,7 +80,7 @@ function getAppUserAgent() {
 }
 
 // Trusted base domains that may load in-app, matched by suffix so first-party
-// subdomains (login.microsoftonline.com, teams.microsoft.com, *.cloud.microsoft,
+// subdomains (login.microsoftonline.com, teams.cloud.microsoft, *.cloud.microsoft,
 // etc.) are covered without an exhaustive list. Custom pinned sites are NOT
 // granted here — they're allowed only by exact host in their own service view.
 const TRUSTED_BASE_DOMAINS = [
@@ -109,14 +125,23 @@ const serviceFeeds = {}
 const lastActiveAt = {}
 // key → ms timestamp of the last scrape (throttles hidden-view background scrapes)
 const lastScrapeAt = {}
+// key → ms timestamp of the last post-load blank-page health check.
+const lastBlankHealthAt = {}
 // Staggered prewarm queue: keys waiting to load one-at-a-time in the background so
 // the app never spawns every renderer at once (the "too many windows" crash).
 const prewarmQueue = []
 const prewarmForceKeys = new Set()
 let prewarmActive = false
+let prewarmCurrentKey = null
 const microsoftAuthState = new Map()
+const microsoftAuthEvents = []
+const serviceCrashHistory = new Map()
+const teamsFallbackState = new Map()
+let networkOnline = true
 let lastMicrosoftRefreshAt = 0
 let reaperTimer = null
+let microsoftSessionHealthTimer = null
+let microsoftSessionHealthActive = false
 
 let activeServiceKey = 'mail'
 // Split view: when this holds exactly two service keys, both are shown side by
@@ -165,6 +190,7 @@ let asanaNotifReady = false
 const remindedEventIds = new Set()
 // Per-service snooze: serviceKey → expiresAtMs
 const serviceSnooze = new Map()
+const notificationCooldownUntil = new Map()
 // True after any Microsoft service successfully authenticates (one-time pre-warm)
 let servicesPrewarmed = false
 // First-boot welcome/SSO screen: when active the BrowserView is detached so the
@@ -193,14 +219,18 @@ function clampZoom(level) {
   return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, level))
 }
 
+function liveWebContents(view) {
+  const contents = view && view.webContents
+  return contents && !contents.isDestroyed() ? contents : null
+}
+
 // Apply an absolute zoom level to a service's view and remember it.
 function setServiceZoom(key, level) {
   const next = clampZoom(level)
   zoomLevels.set(key, next)
   const view = serviceViews.get(key)
-  if (view && !view.webContents.isDestroyed()) {
-    view.webContents.setZoomLevel(next)
-  }
+  const contents = liveWebContents(view)
+  if (contents) contents.setZoomLevel(next)
   if (settings && settings.layout) persistLayout()
 }
 
@@ -284,8 +314,50 @@ function addDownloadHistory(entry) {
   settings = store.save({ ...settings, downloadHistory })
 }
 
+function getMicrosoftAuthDiagnostics() {
+  const keys = partitionKeysForRepair('microsoft')
+  return {
+    loginHint: microsoftLoginHint(),
+    webSession: hasMicrosoftWebSession(),
+    states: keys.map((key) => {
+      const service = findService(key)
+      const state = serviceState[key] || {}
+      return {
+        key,
+        label: service ? serviceDisplayLabel(service) : key,
+        authState: microsoftAuthState.get(key) || 'unknown',
+        loaded: loadedServiceKeys.has(key),
+        visible: Boolean(service && service.visible),
+        href: state.href || ''
+      }
+    }),
+    events: microsoftAuthEvents.slice(0, MICROSOFT_AUTH_EVENT_MAX)
+  }
+}
+
+function getNotificationDiagnostics() {
+  const now = Date.now()
+  return {
+    history: (((settings.notificationState || {}).history) || []).slice(0, NOTIFICATION_HISTORY_MAX),
+    baselines: {
+      mailboxes: mailNotificationState.size,
+      mailIds: [...mailNotificationState.values()].reduce((total, state) => total + ((state.notifiedIds && state.notifiedIds.size) || 0), 0),
+      asanaIds: notifiedTaskIds.size,
+      calendarIds: remindedEventIds.size,
+      teamsReady: teamsNotifReady,
+      teamsLastCount: lastTeamsNotificationCount
+    },
+    cooldowns: [...notificationCooldownUntil.entries()]
+      .filter(([, until]) => until > now)
+      .map(([key, until]) => ({ key, remainingMs: Math.max(0, until - now) }))
+      .slice(0, 30)
+  }
+}
+
 function getDiagnostics() {
   const conn = connections.getStatus()
+  const recentFailuresFor = (keys) => (settings.serviceFailureLog || [])
+    .filter((item) => keys.includes(item.serviceKey) && Date.now() - (item.at || 0) < 30 * 60 * 1000)
   return {
     generatedAt: Date.now(),
     quietHoursActive: isQuietHours(),
@@ -303,10 +375,56 @@ function getDiagnostics() {
         feedKind: feed ? feed.kind : '',
         feedState: feed ? feed.state : '',
         feedItems: feed && Array.isArray(feed.items) ? feed.items.length : 0,
-        source: feed ? (apiOwnsFeed(service.key) ? 'api' : 'scraper') : ''
+        source: feed ? (apiOwnsFeed(service.key) ? 'api' : 'scraper') : '',
+        lastRefreshAt: feed ? feed.lastRefreshAt || 0 : 0,
+        lastError: feed ? feed.lastError || '' : '',
+        stale: Boolean(feed && feed.lastRefreshAt && Date.now() - feed.lastRefreshAt > STALE_FEED_MS),
+        prewarmState: prewarmCurrentKey === service.key
+          ? 'prewarming'
+          : prewarmQueue.includes(service.key)
+            ? 'queued'
+            : !serviceViews.has(service.key)
+              ? 'sleeping'
+              : loadedServiceKeys.has(service.key)
+                ? 'loaded'
+                : 'idle',
+        visibleState: (serviceState[service.key] || {}).visible ? 'onscreen' : 'background'
       }
     }),
     connections: conn,
+    debugging: settings.debugging || {},
+    microsoftAuth: settings.debugging && settings.debugging.enabled ? getMicrosoftAuthDiagnostics() : {
+      loginHint: microsoftLoginHint() ? 'available' : '',
+      webSession: hasMicrosoftWebSession(),
+      states: [],
+      events: []
+    },
+    notifications: settings.debugging && settings.debugging.enabled ? getNotificationDiagnostics() : {
+      history: [],
+      baselines: {},
+      cooldowns: []
+    },
+    networkOnline,
+    prewarm: {
+      active: prewarmActive,
+      currentKey: prewarmCurrentKey,
+      queuedKeys: prewarmQueue.slice()
+    },
+    sessionPartitions: settings.debugging && settings.debugging.enabled ? [
+      {
+        key: 'microsoft',
+        label: 'Microsoft',
+        services: partitionKeysForRepair('microsoft'),
+        recentFailures: recentFailuresFor(partitionKeysForRepair('microsoft')).length
+      },
+      {
+        key: 'asana',
+        label: 'Asana',
+        services: partitionKeysForRepair('asana'),
+        recentFailures: recentFailuresFor(partitionKeysForRepair('asana')).length
+      }
+    ] : [],
+    serviceFailureLog: settings.debugging && settings.debugging.enabled ? (settings.serviceFailureLog || []).slice(0, SERVICE_FAILURE_LOG_MAX) : [],
     quietStart: (settings.notif || {}).quietStart || '',
     quietEnd: (settings.notif || {}).quietEnd || '',
     quietWeekends: Boolean((settings.notif || {}).quietWeekends),
@@ -328,7 +446,8 @@ function pushDownloads() {
       savePath: e.savePath,
       speed: e.speed,
       startedAt: e.startedAt,
-      errorMessage: e.errorMessage || null
+      errorMessage: e.errorMessage || null,
+      retryable: Boolean(e.url && e.state !== 'progressing')
     })
   }
   list.sort((a, b) => b.startedAt - a.startedAt)
@@ -385,6 +504,38 @@ function primaryMailDisplayLabel() {
   return connectedMicrosoftEmail() || discoveredPrimaryMailEmail || ''
 }
 
+function microsoftLoginHint() {
+  return connectedMicrosoftEmail() || discoveredPrimaryMailEmail || ''
+}
+
+function withMicrosoftLoginHint(service, url) {
+  const hint = microsoftLoginHint()
+  if (!hint || !isMicrosoftService(service) || typeof url !== 'string') return url
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'https:' || !isTrustedDomain(parsed.hostname)) return url
+    if (!parsed.searchParams.has('login_hint')) {
+      parsed.searchParams.set('login_hint', hint)
+    }
+    return parsed.toString()
+  } catch {
+    return url
+  }
+}
+
+function serviceHomeTarget(service) {
+  if (!service) return ''
+  return withMicrosoftLoginHint(service, service.home || service.url)
+}
+
+function serviceInitialTarget(service) {
+  if (!service) return ''
+  const target = (service.key === 'mail' || service.mailboxManaged)
+    ? (service.home || service.url)
+    : service.url
+  return withMicrosoftLoginHint(service, target)
+}
+
 function serviceDisplayLabel(service) {
   if (!service) return ''
   if (service.key === 'mail') return primaryMailDisplayLabel() || service.label
@@ -399,7 +550,8 @@ function ensureServiceState(service) {
       title: service.label,
       unreadCount: 0,
       href: service.url,
-      visible: false
+      visible: false,
+      health: { state: 'idle', message: '', code: 0, at: 0 }
     }
   } else {
     serviceState[service.key].label = service.label
@@ -407,7 +559,7 @@ function ensureServiceState(service) {
   if (!serviceFeeds[service.key] && service.feed) {
     // gen is bumped whenever the feed's source of truth changes (API connect/
     // disconnect) so in-flight polls from the old source can be discarded.
-    serviceFeeds[service.key] = { kind: service.feed, state: 'loading', items: [], gen: 0 }
+    serviceFeeds[service.key] = { kind: service.feed, state: 'loading', items: [], gen: 0, lastRefreshAt: 0, lastError: '' }
   }
 }
 
@@ -473,7 +625,8 @@ function isSnoozableService(serviceKey) {
 // call audio too — acceptable while snoozed.
 function applyServiceMute(serviceKey) {
   const view = serviceViews.get(serviceKey)
-  if (!view?.webContents || view.webContents.isDestroyed()) {
+  const contents = liveWebContents(view)
+  if (!contents) {
     // Stale map entry — webContents was destroyed (hibernation/reap) but the key
     // lingered; drop it so refreshFeeds and ensureServiceView don't crash.
     if (view) {
@@ -482,7 +635,178 @@ function applyServiceMute(serviceKey) {
     }
     return
   }
-  view.webContents.setAudioMuted(isSnoozed(serviceKey))
+  contents.setAudioMuted(isSnoozed(serviceKey))
+}
+
+function serviceUrlHost(value) {
+  try { return new URL(value).hostname } catch { return '' }
+}
+
+function recordDebugEvent(kind, title, subtitle = '', serviceKey = '', url = '', code = 0) {
+  const item = {
+    id: `debug-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    kind: `debug-${kind || 'event'}`,
+    title: String(title || kind || 'Debug event').slice(0, 180),
+    subtitle: String(subtitle || '').slice(0, 220),
+    url: String(url || '').slice(0, 2000),
+    serviceKey: String(serviceKey || '').slice(0, 80),
+    at: Date.now(),
+    code: typeof code === 'number' ? code : 0
+  }
+  settings = store.save({
+    ...settings,
+    serviceFailureLog: [item, ...(settings.serviceFailureLog || [])].slice(0, SERVICE_FAILURE_LOG_MAX)
+  })
+}
+
+function recordMicrosoftAuthEvent(event = {}) {
+  if (!event || event.provider !== 'microsoft') return
+  const type = String(event.type || 'event').slice(0, 80)
+  const item = {
+    id: `ms-auth-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    type,
+    stage: String(event.stage || '').slice(0, 80),
+    prompt: String(event.prompt || '').slice(0, 40),
+    oauthError: String(event.oauthError || '').slice(0, 120),
+    message: String(event.message || event.reason || '').slice(0, 220),
+    loginHint: String(event.loginHint || '').slice(0, 160),
+    at: Date.now()
+  }
+  microsoftAuthEvents.unshift(item)
+  if (microsoftAuthEvents.length > MICROSOFT_AUTH_EVENT_MAX) {
+    microsoftAuthEvents.splice(MICROSOFT_AUTH_EVENT_MAX)
+  }
+  if (settings.debugging && settings.debugging.enabled && /error|failed|timeout|cancelled/i.test(type)) {
+    recordDebugEvent(
+      'microsoft-auth',
+      `Microsoft auth: ${type}`,
+      [item.stage, item.oauthError, item.message].filter(Boolean).join(' · '),
+      activeServiceKey
+    )
+  }
+}
+
+function recordServiceFailure(serviceKey, kind, message, code = 0, url = '') {
+  const service = findService(serviceKey)
+  if (!service) return
+  recordDebugEvent(kind || 'failure', `${service.label}: ${kind || 'failure'}`, message, serviceKey, url, code)
+}
+
+function clearTeamsFallback(serviceKey) {
+  if (serviceKey === 'teams') teamsFallbackState.delete(serviceKey)
+}
+
+function maybeTryTeamsFallback(serviceKey, reason) {
+  if (serviceKey !== 'teams') return false
+  const service = findService(serviceKey)
+  const view = serviceViews.get(serviceKey)
+  const contents = liveWebContents(view)
+  if (!service || !contents) return false
+  const currentUrl = (serviceState[serviceKey] && serviceState[serviceKey].href) || contents.getURL() || service.url
+  const currentHost = serviceUrlHost(currentUrl)
+  const currentIndex = TEAMS_FALLBACK_URLS.findIndex((candidate) => serviceUrlHost(candidate) === currentHost)
+  const fallback = teamsFallbackState.get(serviceKey) || { attemptedHosts: [], lastAt: 0 }
+  for (let i = currentIndex + 1; i < TEAMS_FALLBACK_URLS.length; i += 1) {
+    const next = TEAMS_FALLBACK_URLS[i]
+    const host = serviceUrlHost(next)
+    if (fallback.attemptedHosts.includes(host)) continue
+    fallback.attemptedHosts.push(host)
+    fallback.lastAt = Date.now()
+    teamsFallbackState.set(serviceKey, fallback)
+    recordServiceFailure(serviceKey, 'teams-fallback', `Trying ${host} after ${reason || 'load issue'}`, 0, currentUrl)
+    if (serviceState[serviceKey]) {
+      serviceState[serviceKey].health = { state: 'loading', message: `Trying ${host}`, code: 0, at: Date.now(), url: next }
+    }
+    loadedServiceKeys.add(serviceKey)
+    safeLoadURL(contents, next)
+    return true
+  }
+  if (!String((serviceState[serviceKey]?.health || {}).message || '').includes('Clear Teams session')) {
+    const state = serviceState[serviceKey]
+    if (state) {
+      state.health = {
+        ...(state.health || {}),
+        state: 'failed',
+        message: 'Teams still did not render. Clear Teams session or open it in the browser.',
+        at: Date.now()
+      }
+    }
+  }
+  return false
+}
+
+function maybeClickTeamsRecoveryAction(serviceKey, health) {
+  if (serviceKey !== 'teams' || !health || (!health.hasTeamsClearCache && !health.hasTeamsRetry)) return false
+  const view = serviceViews.get(serviceKey)
+  const contents = liveWebContents(view)
+  if (!contents) return false
+  const href = health.href || contents.getURL() || ''
+  const fallback = teamsFallbackState.get(serviceKey) || { attemptedHosts: [], lastAt: 0 }
+  fallback.recoveryUrls = Array.isArray(fallback.recoveryUrls) ? fallback.recoveryUrls : []
+  if (fallback.recoveryUrls.includes(href)) return false
+  fallback.recoveryUrls.push(href)
+  fallback.lastAt = Date.now()
+  teamsFallbackState.set(serviceKey, fallback)
+  recordServiceFailure(
+    serviceKey,
+    'teams-recovery',
+    health.hasTeamsClearCache ? 'Clicking Teams clear-cache retry action.' : 'Clicking Teams retry action.',
+    0,
+    href
+  )
+  contents
+    .executeJavaScript(`(() => {
+      const clear = document.getElementById('error-action-clear-cache')
+      const retry = document.getElementById('error-action')
+      const btn = clear || retry
+      if (!btn) return false
+      btn.click()
+      return true
+    })()`, true)
+    .catch(() => {})
+  return true
+}
+
+function setServiceHealth(serviceKey, patch) {
+  const service = findService(serviceKey)
+  if (!service) return
+  ensureServiceState(service)
+  const prev = serviceState[serviceKey].health || { state: 'idle', message: '', code: 0, at: 0 }
+  serviceState[serviceKey].health = {
+    ...prev,
+    ...(patch || {}),
+    at: Date.now()
+  }
+  if (['failed', 'blank', 'crashed', 'safe-mode'].includes(serviceState[serviceKey].health.state)) {
+    recordServiceFailure(
+      serviceKey,
+      serviceState[serviceKey].health.state,
+      serviceState[serviceKey].health.message,
+      serviceState[serviceKey].health.code,
+      serviceState[serviceKey].health.url || serviceState[serviceKey].href || service.url
+    )
+    maybeTryTeamsFallback(serviceKey, serviceState[serviceKey].health.state)
+  }
+  pushSnapshot()
+  attachServiceView()
+}
+
+function clearServiceHealth(serviceKey) {
+  const state = serviceState[serviceKey]
+  if (!state || !state.health || state.health.state === 'ok') return
+  const prevHealth = state.health
+  state.health = { state: 'ok', message: '', code: 0, at: Date.now() }
+  clearTeamsFallback(serviceKey)
+  if (prevHealth && ['failed', 'blank', 'crashed', 'safe-mode'].includes(prevHealth.state)) {
+    recordServiceFailure(serviceKey, 'recovered', 'Page recovered after repair or reload', 0, state.href || '')
+  }
+  pushSnapshot()
+  attachServiceView()
+}
+
+function shouldReportBlankLoad(serviceKey) {
+  if (serviceKey === 'teams') return true
+  return Boolean(serviceState[serviceKey] && serviceState[serviceKey].visible)
 }
 
 // Single entry point for changing a service's snooze: updates the map, mutes the
@@ -573,11 +897,14 @@ function compose(kind) {
   showPanelWindow()
   showService(target)
   const view = serviceViews.get(target)
-  if (!view || view.webContents.isDestroyed()) return
+  const contents = liveWebContents(view)
+  if (!contents) return
   const script = COMPOSE_SCRIPTS[target]
   if (!script) return
   setTimeout(() => {
-    view.webContents
+    const liveContents = liveWebContents(view)
+    if (!liveContents) return
+    liveContents
       .executeJavaScript(script, true)
       .then((ok) => {
         if (!ok && COMPOSE_DEEPLINK[target]) {
@@ -630,6 +957,28 @@ function isTeamsHost(host) {
     host === 'teams.cloud.microsoft' ||
     host.endsWith('.teams.cloud.microsoft')
   )
+}
+
+function isTeamsEmailShareLink(urlString) {
+  try {
+    const parsed = new URL(urlString)
+    if (!isTeamsHost(parsed.hostname)) return false
+    if (/^\/l\/share-email(?:\/|$)/i.test(parsed.pathname)) return true
+    if (/^#\/l\/share-email(?:\/|$)/i.test(parsed.hash)) return true
+    if (/^\/dl\/launcher\/launcher\.html$/i.test(parsed.pathname)) {
+      const launcherType = parsed.searchParams.get('type') || ''
+      const launcherUrl = parsed.searchParams.get('url') || ''
+      return launcherType === 'share-email' || /(?:^|\/|#)l\/share-email(?:\/|$|\?)/i.test(launcherUrl)
+    }
+    return false
+  } catch {
+    return false
+  }
+}
+
+function shouldConfirmTeamsNavigation(url, sourceService) {
+  if (!sourceService || sourceService.key === 'teams') return false
+  return !isTeamsEmailShareLink(url)
 }
 
 // Once one Microsoft tab is authenticated, eagerly load the other VISIBLE
@@ -695,6 +1044,187 @@ function handleMicrosoftNavigation(service, url) {
   }
 }
 
+function hasMicrosoftWebSession() {
+  return settings.services.some((service) => isMicrosoftService(service) && microsoftAuthState.get(service.key) === 'app')
+}
+
+const MICROSOFT_AUTH_HEALTH_SCRIPT = `(() => {
+  const text = document.body ? (document.body.innerText || '').replace(/\\s+/g, ' ').trim() : ''
+  const hasInteractive = Boolean(document.querySelector('input, textarea, button, [role="button"], [contenteditable="true"]'))
+  const hasCredentialInput = Boolean(document.querySelector('input[type="password"], input[name="loginfmt"], input[name="passwd"], input[type="email"]'))
+  const signInText = /\\b(sign in|log in|pick an account|use another account)\\b/i.test(text)
+  return {
+    href: location.href,
+    title: document.title || '',
+    textLength: text.length,
+    hasInteractive,
+    hasCredentialInput,
+    signInText
+  }
+})()`
+
+async function inspectMicrosoftServiceAuth(service) {
+  const view = serviceViews.get(service.key)
+  const state = serviceState[service.key] || {}
+  const contents = liveWebContents(view)
+  if (!contents) {
+    return { service, state: 'unloaded', href: state.href || service.url, title: '' }
+  }
+  let href = contents.getURL() || state.href || service.url
+  let host = ''
+  try { host = new URL(href).hostname } catch { /* ignore */ }
+  if (host && isMicrosoftLoginHost(host)) {
+    return { service, state: 'login', href, title: contents.getTitle() || '' }
+  }
+
+  let info = null
+  try {
+    info = await contents.executeJavaScript(MICROSOFT_AUTH_HEALTH_SCRIPT, true)
+  } catch {
+    /* page may be navigating or destroyed */
+  }
+  if (info && typeof info.href === 'string') {
+    href = info.href
+    try { host = new URL(href).hostname } catch { /* ignore */ }
+  }
+  if (host && isMicrosoftLoginHost(host)) {
+    return { service, state: 'login', href, title: info?.title || contents.getTitle() || '' }
+  }
+  if (info && info.textLength === 0 && !info.hasInteractive) {
+    return { service, state: 'blank', href, title: info.title || '' }
+  }
+  if (info && (info.hasCredentialInput || (info.signInText && host && isMicrosoftAppHost(host)))) {
+    return { service, state: 'login', href, title: info.title || '' }
+  }
+  if (host && isMicrosoftAppHost(host)) {
+    return { service, state: 'app', href, title: info?.title || contents.getTitle() || '' }
+  }
+  return { service, state: 'unknown', href, title: info?.title || contents.getTitle() || '' }
+}
+
+function microsoftServiceNeedsSoftRepair(service, inspection = null) {
+  const state = serviceState[service.key] || {}
+  const healthState = state.health && state.health.state
+  if (['failed', 'blank', 'crashed'].includes(healthState)) return true
+  if (inspection && ['login', 'blank'].includes(inspection.state)) return true
+  if (microsoftAuthState.get(service.key) === 'login') return true
+  try {
+    const href = state.href || ''
+    if (href && isMicrosoftLoginHost(new URL(href).hostname)) return true
+  } catch {
+    /* ignore */
+  }
+  return false
+}
+
+function softRepairMicrosoftService(service, reason = 'manual', options = {}) {
+  if (!service || !isMicrosoftService(service)) return false
+  const { allowOnscreen = false } = options
+  const state = serviceState[service.key] || {}
+  if (!allowOnscreen && state.visible) {
+    recordMicrosoftAuthEvent({
+      provider: 'microsoft',
+      type: 'soft-repair-deferred',
+      stage: reason,
+      message: `${service.label} is onscreen`,
+      loginHint: microsoftLoginHint()
+    })
+    return false
+  }
+  const view = ensureServiceView(service.key)
+  const contents = liveWebContents(view)
+  if (!contents) return false
+  const target = serviceHomeTarget(service)
+  recordMicrosoftAuthEvent({
+    provider: 'microsoft',
+    type: 'soft-repair',
+    stage: reason,
+    message: service.label,
+    loginHint: microsoftLoginHint()
+  })
+  loadedServiceKeys.delete(service.key)
+  loadedServiceKeys.add(service.key)
+  if (serviceState[service.key]) {
+    serviceState[service.key].health = { state: 'loading', message: '', code: 0, at: Date.now(), url: target }
+  }
+  safeLoadURL(contents, target)
+  return true
+}
+
+async function runMicrosoftSessionHealthSweep(reason = 'timer') {
+  if (microsoftSessionHealthActive || !networkOnline) return
+  microsoftSessionHealthActive = true
+  try {
+    updateVisibleStates()
+    const microsoftServices = settings.services.filter((service) => service.visible && isMicrosoftService(service))
+    const issues = []
+    let confirmedSession = hasMicrosoftWebSession()
+    for (const service of microsoftServices) {
+      const inspection = await inspectMicrosoftServiceAuth(service)
+      if (inspection.state === 'app') {
+        microsoftAuthState.set(service.key, 'app')
+        confirmedSession = true
+        clearServiceHealth(service.key)
+      } else if (inspection.state === 'login') {
+        microsoftAuthState.set(service.key, 'login')
+      } else if (inspection.state === 'blank') {
+        setServiceHealth(service.key, {
+          state: 'blank',
+          message: 'Microsoft tab rendered without visible content during auth health check.',
+          code: 0,
+          url: inspection.href || ''
+        })
+      }
+      if (microsoftServiceNeedsSoftRepair(service, inspection)) {
+        issues.push({ service, inspection })
+      }
+    }
+
+    if (issues.length || reason !== 'timer') {
+      recordMicrosoftAuthEvent({
+        provider: 'microsoft',
+        type: 'session-health',
+        stage: reason,
+        message: `${issues.length} tab(s) need attention`,
+        loginHint: microsoftLoginHint()
+      })
+    }
+
+    if (confirmedSession) {
+      for (const issue of issues) {
+        softRepairMicrosoftService(issue.service, reason, { allowOnscreen: reason !== 'timer' })
+      }
+      if (issues.length || reason !== 'timer') prewarmMicrosoftServices({ force: true })
+      else prewarmMicrosoftServices()
+    } else if (reason !== 'timer') {
+      const target = findService(activeServiceKey)
+      const fallback = target && isMicrosoftService(target) ? target : findService('mail')
+      if (fallback) softRepairMicrosoftService(fallback, reason, { allowOnscreen: true })
+    }
+    pushSnapshot()
+  } catch (err) {
+    recordMicrosoftAuthEvent({
+      provider: 'microsoft',
+      type: 'session-health-error',
+      stage: reason,
+      message: err && err.message ? err.message : 'health check failed',
+      loginHint: microsoftLoginHint()
+    })
+  } finally {
+    microsoftSessionHealthActive = false
+  }
+}
+
+function startMicrosoftSessionHealthTimer() {
+  if (microsoftSessionHealthTimer) clearInterval(microsoftSessionHealthTimer)
+  setTimeout(() => {
+    runMicrosoftSessionHealthSweep('boot').catch(() => {})
+  }, MICROSOFT_SESSION_HEALTH_BOOT_DELAY_MS)
+  microsoftSessionHealthTimer = setInterval(() => {
+    runMicrosoftSessionHealthSweep('timer').catch(() => {})
+  }, MICROSOFT_SESSION_HEALTH_MS)
+}
+
 // A view needs to stay resident because it is the live source of its
 // notifications: Teams (unread parsed from the tab title) and any feed still
 // served by DOM scrape (no API connected). API-backed feeds keep polling without
@@ -716,7 +1246,7 @@ function needsLiveView(key) {
 // serviceState/serviceFeeds cache. No-op if a live view already exists.
 function ensureServiceView(key) {
   const existing = serviceViews.get(key)
-  if (existing && existing.webContents && !existing.webContents.isDestroyed()) return existing
+  if (liveWebContents(existing)) return existing
   // A cached view with a missing/destroyed webContents can't be reused — drop it
   // so a fresh one is built below instead of crashing on a stale handle.
   if (existing) {
@@ -734,6 +1264,10 @@ function ensureServiceView(key) {
 // destroyServiceView this preserves serviceState/serviceFeeds.
 function hibernateServiceView(key) {
   if (layoutKeys().includes(key)) return // never sleep an on-screen pane
+  forceUnloadServiceView(key)
+}
+
+function forceUnloadServiceView(key) {
   const view = serviceViews.get(key)
   if (!view) return
   try {
@@ -775,25 +1309,38 @@ function pumpPrewarm() {
     if (idx === -1) return // only non-essential keys left — wait for a freed slot
   }
   const key = prewarmQueue.splice(idx, 1)[0]
+  prewarmCurrentKey = key
   const view = serviceViews.get(key)
   const service = findService(key)
-  if (!view || !service || view.webContents.isDestroyed()) {
+  const contents = liveWebContents(view)
+  if (!contents || !service) {
     prewarmForceKeys.delete(key)
+    prewarmCurrentKey = null
     pumpPrewarm()
     return
   }
   prewarmActive = true
   let advanced = false
+  let prewarmTimer = null
   const advance = () => {
     if (advanced) return
     advanced = true
+    if (prewarmTimer) clearTimeout(prewarmTimer)
     prewarmForceKeys.delete(key)
     prewarmActive = false
+    if (prewarmCurrentKey === key) prewarmCurrentKey = null
     setTimeout(pumpPrewarm, PREWARM_SETTLE_MS)
   }
-  view.webContents.once('did-finish-load', advance)
+  contents.once('did-finish-load', advance)
   ensureServiceLoaded(key)
-  setTimeout(advance, PREWARM_TIMEOUT_MS)
+  prewarmTimer = setTimeout(() => {
+    if (!advanced) {
+      const currentContents = liveWebContents(view)
+      const currentUrl = currentContents ? currentContents.getURL() : ''
+      recordServiceFailure(key, 'prewarm-timeout', `Prewarm did not finish within ${Math.round(PREWARM_TIMEOUT_MS / 1000)} seconds.`, 0, currentUrl)
+    }
+    advance()
+  }, PREWARM_TIMEOUT_MS)
 }
 
 // Boot-time prewarm: load notification-source views first (so Teams and any
@@ -868,6 +1415,138 @@ function fireNotification(opts, onClick) {
   n.show()
 }
 
+function serializeNotificationState() {
+  return {
+    mail: Object.fromEntries([...mailNotificationState.entries()].map(([key, state]) => [
+      key,
+      {
+        ready: Boolean(state.ready),
+        lastCount: Math.max(0, Math.trunc(state.lastCount || 0)),
+        ids: Array.from(state.notifiedIds || []).slice(-BASELINE_SET_MAX)
+      }
+    ])),
+    asana: {
+      ready: Boolean(asanaNotifReady),
+      ids: Array.from(notifiedTaskIds).slice(-BASELINE_SET_MAX)
+    },
+    calendar: {
+      ids: Array.from(remindedEventIds).slice(-BASELINE_SET_MAX)
+    },
+    teams: {
+      ready: Boolean(teamsNotifReady),
+      lastCount: Math.max(0, Math.trunc(lastTeamsNotificationCount || 0))
+    },
+    history: (((settings.notificationState || {}).history) || []).slice(0, NOTIFICATION_HISTORY_MAX)
+  }
+}
+
+function restoreNotificationEngineState() {
+  const state = settings.notificationState || {}
+  mailNotificationState.clear()
+  for (const [key, value] of Object.entries(state.mail || {})) {
+    mailNotificationState.set(key, {
+      notifiedIds: new Set(Array.isArray(value.ids) ? value.ids : []),
+      ready: Boolean(value.ready),
+      lastCount: Math.max(0, Math.trunc(value.lastCount || 0))
+    })
+  }
+  notifiedTaskIds.clear()
+  for (const id of (state.asana && Array.isArray(state.asana.ids) ? state.asana.ids : [])) notifiedTaskIds.add(id)
+  asanaNotifReady = Boolean(state.asana && state.asana.ready)
+  remindedEventIds.clear()
+  for (const id of (state.calendar && Array.isArray(state.calendar.ids) ? state.calendar.ids : [])) remindedEventIds.add(id)
+  teamsNotifReady = Boolean(state.teams && state.teams.ready)
+  lastTeamsNotificationCount = Math.max(0, Math.trunc((state.teams && state.teams.lastCount) || 0))
+}
+
+function persistNotificationState() {
+  settings = store.save({
+    ...settings,
+    notificationState: serializeNotificationState()
+  })
+}
+
+function recordNotificationEvent(status, candidate, reason = '') {
+  const service = findService(candidate.serviceKey)
+  const serviceLabel = service ? serviceDisplayLabel(service) : candidate.serviceKey || candidate.kind || 'Notification'
+  const item = {
+    id: `notification-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    kind: `notification-${status || 'event'}`,
+    title: `${serviceLabel}: ${candidate.title || 'Notification'}`.slice(0, 180),
+    subtitle: [candidate.kind, reason, candidate.body].filter(Boolean).join(' · ').slice(0, 220),
+    url: candidate.url || '',
+    serviceKey: candidate.serviceKey || '',
+    at: Date.now(),
+    code: 0
+  }
+  const state = settings.notificationState || {}
+  settings = store.save({
+    ...settings,
+    notificationState: {
+      ...serializeNotificationState(),
+      history: [item, ...((state.history || []))].slice(0, NOTIFICATION_HISTORY_MAX)
+    }
+  })
+}
+
+function recordWebNotificationPermission(allowed, url, webContents) {
+  if (!settings.debugging || !settings.debugging.enabled) return
+  let host = ''
+  try { host = new URL(url).hostname } catch { /* ignore */ }
+  const serviceKey = serviceKeyForWebContents(webContents) || (host && isMicrosoftAppHost(host) ? 'microsoft' : 'web')
+  recordNotificationEvent(allowed ? 'web-permission-allowed' : 'web-permission-denied', {
+    kind: host && isMicrosoftAppHost(host) ? 'ms365' : 'web',
+    serviceKey,
+    title: allowed ? 'Web notification permission allowed' : 'Web notification permission blocked',
+    body: host || url || 'unknown origin',
+    url: url || ''
+  })
+}
+
+function notificationSuppressionReason(candidate) {
+  if (candidate.bypassGates) return ''
+  const kind = candidate.kind || ''
+  const notif = settings.notif || {}
+  if (!Notification.isSupported()) return 'unsupported'
+  if (kind && notif[kind] === false) return `${kind} disabled`
+  if (isQuietHours() && !(kind === 'calendar' && notif.quietAllowCalendar) && !candidate.allowQuietHours) return 'quiet hours'
+  if (candidate.serviceKey && isSnoozed(candidate.serviceKey)) return 'snoozed'
+  if (candidate.suppressWhenFocused !== false && panelWindow && panelWindow.isFocused() && activeServiceKey === candidate.serviceKey) return 'focused'
+  return ''
+}
+
+function dispatchNotification(candidate, onClick) {
+  const now = Date.now()
+  const kind = candidate.kind || 'general'
+  const serviceKey = candidate.serviceKey || kind
+  const cooldownKey = candidate.cooldownKey || `${kind}:${serviceKey}`
+  const cooldownMs = typeof candidate.cooldownMs === 'number'
+    ? Math.max(0, candidate.cooldownMs)
+    : Math.max(0, NOTIFICATION_KIND_COOLDOWN_MS[kind] || 0)
+  if (cooldownMs > 0 && now < (notificationCooldownUntil.get(cooldownKey) || 0)) {
+    return { shown: false, reason: 'cooldown' }
+  }
+  const reason = notificationSuppressionReason({ ...candidate, serviceKey })
+  if (reason) {
+    recordNotificationEvent('suppressed', { ...candidate, serviceKey, kind }, reason)
+    if (cooldownMs > 0) notificationCooldownUntil.set(cooldownKey, now + cooldownMs)
+    return { shown: false, reason }
+  }
+  const notification = new Notification({
+    title: candidate.title || 'MailStudio',
+    body: candidate.body || '',
+    silent: Boolean(candidate.silent)
+  })
+  notification.on('click', () => {
+    recordNotificationEvent('clicked', { ...candidate, serviceKey, kind })
+    if (typeof onClick === 'function') onClick()
+  })
+  notification.show()
+  recordNotificationEvent('shown', { ...candidate, serviceKey, kind })
+  if (cooldownMs > 0) notificationCooldownUntil.set(cooldownKey, now + cooldownMs)
+  return { shown: true, reason: '' }
+}
+
 function markMailItemsSeen(state, items) {
   for (const item of items) { if (item.id) state.notifiedIds.add(item.id) }
   capBaselineSet(state.notifiedIds)
@@ -880,17 +1559,21 @@ function mailNotifyState(serviceKey) {
   return mailNotificationState.get(serviceKey)
 }
 
-function diffAndNotifyMail(items, unreadCount, serviceKey = 'mail') {
+function diffAndNotifyMail(items, unreadCount, serviceKey = 'mail', options = {}) {
   const state = mailNotifyState(serviceKey)
   const service = findService(serviceKey) || findService('mail')
   const serviceLabel = service ? service.label : 'Mail'
+  const hasItems = Array.isArray(items) && items.length > 0
+  const knownEmptyBaseline = Boolean(options.knownEmptyBaseline)
   if (unreadCount === 0) {
+    if (!state.ready && !hasItems && !knownEmptyBaseline) return
     state.notifiedIds.clear()
     state.lastCount = 0
     // A known-zero inbox is a valid baseline. If the next poll rises to 1, that
     // message is new and should notify; resetting to "not ready" would silently
     // swallow the first new mail after inbox zero.
     state.ready = true
+    persistNotificationState()
     return
   }
 
@@ -899,6 +1582,7 @@ function diffAndNotifyMail(items, unreadCount, serviceKey = 'mail') {
     markMailItemsSeen(state, items)
     state.lastCount = unreadCount
     state.ready = true
+    persistNotificationState()
     return
   }
 
@@ -908,20 +1592,15 @@ function diffAndNotifyMail(items, unreadCount, serviceKey = 'mail') {
 
   if (!countWentUp) return
   const newItems = items.filter((item) => item.id && !state.notifiedIds.has(item.id) && item.isRead === false)
-  const suppress = (message) => {
-    if (message) console.warn(message)
+  const suppress = (reason) => {
+    if (reason) console.warn(`[notify] mail suppressed: ${reason}`)
     markMailItemsSeen(state, items)
+    persistNotificationState()
   }
-  // From here on a new email arrived and we WOULD notify — log any gate that
-  // suppresses it, so "notifications aren't working" has a visible reason.
-  if (!settings.onboarded) { suppress('[notify] mail suppressed: not onboarded (connect an account / finish setup)'); return }
-  if (!notif.mail) { suppress('[notify] mail suppressed: Mail notifications toggled off in Settings'); return }
-  if (isQuietHours()) { suppress('[notify] mail suppressed: quiet hours active'); return }
-  if (isSnoozed(serviceKey)) { suppress(`[notify] mail suppressed: ${serviceLabel} is snoozed`); return }
-  if (panelWindow && panelWindow.isFocused() && activeServiceKey === serviceKey) { suppress(); return }
 
   // Mark all visible emails as seen to prevent re-notification next cycle.
   markMailItemsSeen(state, items)
+  persistNotificationState()
 
   if (newItems.length === 0) {
     // Unread counts can rise from sync churn, mailbox discovery, or messages
@@ -932,10 +1611,17 @@ function diffAndNotifyMail(items, unreadCount, serviceKey = 'mail') {
 
   if (newItems.length >= 4) {
     const senders = [...new Set(newItems.map((i) => i.sender).filter(Boolean))].slice(0, 4)
-    fireNotification(
-      { title: `${newItems.length} new emails`, body: `${serviceLabel}: ${senders.join(', ')}` },
+    const result = dispatchNotification(
+      {
+        kind: 'mail',
+        serviceKey,
+        title: `${newItems.length} new emails`,
+        body: `${serviceLabel}: ${senders.join(', ')}`,
+        cooldownKey: `mail:${serviceKey}:digest:${newItems.map((item) => item.id).join('|')}`
+      },
       () => { showPanelWindow(); showService(serviceKey) }
     )
+    if (!result.shown) suppress(result.reason)
     return
   }
 
@@ -944,21 +1630,27 @@ function diffAndNotifyMail(items, unreadCount, serviceKey = 'mail') {
     const subject = item.subject || '(no subject)'
     const body = notif.preview && item.preview ? `${subject}\n${item.preview}` : subject
     const rowIdx = item.rowIdx
-    fireNotification(
+    const result = dispatchNotification(
       {
+        kind: 'mail',
+        serviceKey,
         title: item.sender || 'New email',
         body,
-        silent: i > 0 // only the first notification in a batch plays a sound
+        silent: i > 0, // only the first notification in a batch plays a sound
+        cooldownKey: `mail:${serviceKey}:${item.id || rowIdx || i}`
       },
       () => {
         showPanelWindow()
         showService(serviceKey)
         const view = serviceViews.get(serviceKey)
-        if (view && !view.webContents.isDestroyed() && typeof rowIdx === 'number') {
+        const contents = liveWebContents(view)
+        if (contents && typeof rowIdx === 'number') {
           const idx = Math.trunc(rowIdx)
           if (Number.isInteger(idx) && idx >= 0 && idx <= 50000) {
             setTimeout(() => {
-              view.webContents
+              const liveContents = liveWebContents(view)
+              if (!liveContents) return
+              liveContents
                 .executeJavaScript(
                   `(() => { const rows = Array.from(document.querySelectorAll('div[role="option"], div[role="listitem"]')); const r = rows[${idx}]; if (r) { r.click(); r.scrollIntoView({ block: 'nearest' }); } })()`,
                   true
@@ -969,6 +1661,7 @@ function diffAndNotifyMail(items, unreadCount, serviceKey = 'mail') {
         }
       }
     )
+    if (!result.shown) suppress(result.reason)
   }
 }
 
@@ -983,6 +1676,7 @@ function maybeNotifyTeams(unreadCount) {
     if (panelWindow && panelWindow.isFocused() && activeServiceKey === 'teams') {
       teamsNotifReady = true
       lastTeamsNotificationCount = 0
+      persistNotificationState()
     }
     return
   }
@@ -990,24 +1684,21 @@ function maybeNotifyTeams(unreadCount) {
     // First real count after launch establishes the baseline silently.
     teamsNotifReady = true
     lastTeamsNotificationCount = unreadCount
+    persistNotificationState()
     return
   }
   const prev = lastTeamsNotificationCount
   lastTeamsNotificationCount = unreadCount
+  persistNotificationState()
   if (unreadCount <= prev) return
-  // A genuinely higher unread count means we WOULD notify — log any gate that
-  // suppresses it so "Teams notifications aren't working" has a visible reason.
-  if (!settings.onboarded) { console.warn('[notify] teams suppressed: not onboarded (connect an account / finish setup)'); return }
-  const notif = settings.notif || {}
-  if (!notif.teams) { console.warn('[notify] teams suppressed: Teams notifications toggled off in Settings'); return }
-  if (isQuietHours()) { console.warn('[notify] teams suppressed: quiet hours active'); return }
-  if (isSnoozed('teams')) { console.warn('[notify] teams suppressed: Teams is snoozed'); return }
-  if (panelWindow && panelWindow.isFocused() && activeServiceKey === 'teams') return
   const delta = unreadCount - prev
-  fireNotification(
+  dispatchNotification(
     {
+      kind: 'teams',
+      serviceKey: 'teams',
       title: delta === 1 ? 'New Teams message' : `${delta} new Teams messages`,
-      body: `${unreadCount} unread`
+      body: `${unreadCount} unread`,
+      cooldownKey: 'teams:title-count'
     },
     () => { showPanelWindow(); showService('teams') }
   )
@@ -1020,26 +1711,21 @@ function diffAndNotifyAsana(items) {
     for (const item of items) { if (item.id) notifiedTaskIds.add(item.id) }
     capBaselineSet(notifiedTaskIds)
     asanaNotifReady = true
+    persistNotificationState()
     return
   }
   const newItems = items.filter((item) => item.id && !notifiedTaskIds.has(item.id))
   for (const item of items) { if (item.id) notifiedTaskIds.add(item.id) }
   capBaselineSet(notifiedTaskIds)
+  persistNotificationState()
   if (!newItems.length) return
-  // New task(s) assigned — log any gate that suppresses the notification so the
-  // reason is visible rather than silently swallowed.
-  if (!settings.onboarded) { console.warn('[notify] asana suppressed: not onboarded (connect an account / finish setup)'); return }
-  const notif = settings.notif || {}
-  if (!notif.asana) { console.warn('[notify] asana suppressed: Asana notifications toggled off in Settings'); return }
-  if (isQuietHours()) { console.warn('[notify] asana suppressed: quiet hours active'); return }
-  if (isSnoozed('asana')) { console.warn('[notify] asana suppressed: Asana is snoozed'); return }
 
   const open = () => { showPanelWindow(); showService('asana') }
   if (newItems.length === 1) {
-    fireNotification({ title: 'New Asana task', body: newItems[0].name || 'Task assigned to you' }, open)
+    dispatchNotification({ kind: 'asana', serviceKey: 'asana', title: 'New Asana task', body: newItems[0].name || 'Task assigned to you' }, open)
   } else {
-    fireNotification(
-      { title: `${newItems.length} new Asana tasks`, body: newItems.slice(0, 3).map((t) => t.name).filter(Boolean).join(', ') },
+    dispatchNotification(
+      { kind: 'asana', serviceKey: 'asana', title: `${newItems.length} new Asana tasks`, body: newItems.slice(0, 3).map((t) => t.name).filter(Boolean).join(', ') },
       open
     )
   }
@@ -1069,23 +1755,26 @@ function maybeNotifyCalendar(items) {
     return delta > 0 && delta <= CALENDAR_REMINDER_MS
   })
   if (!due.length) return
-  // A reminder is due — log any gate that suppresses it. Gates return before
-  // marking the events reminded, so they fire once the gate clears (if still
-  // inside the window).
-  if (!settings.onboarded) { console.warn('[notify] calendar suppressed: not onboarded (connect an account / finish setup)'); return }
-  const notif = settings.notif || {}
-  if (!notif.calendar) { console.warn('[notify] calendar suppressed: Calendar notifications toggled off in Settings'); return }
-  if (isQuietHours() && !notif.quietAllowCalendar) { console.warn('[notify] calendar suppressed: quiet hours active'); return }
-  if (isSnoozed('calendar')) { console.warn('[notify] calendar suppressed: Calendar is snoozed'); return }
   for (const item of due) {
     const start = new Date(String(item.startIso).replace(/(\.\d+)?$/, '')).getTime()
-    remindedEventIds.add(item.id)
-    capBaselineSet(remindedEventIds)
     const mins = Math.max(1, Math.round((start - now) / 60000))
-    fireNotification(
-      { title: 'Upcoming event', body: `${item.title || 'Event'} starts in ${mins} min` },
+    const result = dispatchNotification(
+      {
+        kind: 'calendar',
+        serviceKey: 'calendar',
+        title: 'Upcoming event',
+        body: `${item.title || 'Event'} starts in ${mins} min`,
+        suppressWhenFocused: false,
+        cooldownKey: `calendar:${item.id}`,
+        cooldownMs: 0
+      },
       () => { showPanelWindow(); showService('calendar') }
     )
+    if (result.shown) {
+      remindedEventIds.add(item.id)
+      capBaselineSet(remindedEventIds)
+      persistNotificationState()
+    }
   }
 }
 
@@ -1105,6 +1794,7 @@ function resetNotificationBaselines(provider) {
     notifiedTaskIds.clear()
     asanaNotifReady = false
   }
+  if (kinds.length) persistNotificationState()
 }
 
 // Hard cutover between sources: drop the provider's cached feed items along
@@ -1117,6 +1807,8 @@ function resetProviderFeeds(provider) {
     if (connections.providerForFeed(serviceFeeds[key].kind) === provider) {
       serviceFeeds[key].state = 'loading'
       serviceFeeds[key].items = []
+      serviceFeeds[key].lastRefreshAt = 0
+      serviceFeeds[key].lastError = ''
       // Invalidate any in-flight poll from the previous source: its result
       // would repopulate the feed and re-baseline notifications with ids the
       // new source will never produce (one spurious "N new emails" burst).
@@ -1192,7 +1884,7 @@ function goHome() {
   const webContents = serviceViews.get(activeServiceKey)?.webContents
   if (service && webContents) {
     loadedServiceKeys.add(activeServiceKey)
-    safeLoadURL(webContents, service.home || service.url)
+    safeLoadURL(webContents, serviceHomeTarget(service))
   }
 }
 
@@ -1236,7 +1928,7 @@ function goServiceHome(serviceKey) {
   attachServiceView()
   ensureServiceLoaded(serviceKey)
   loadedServiceKeys.add(serviceKey)
-  safeLoadURL(webContents, service.home || service.url)
+  safeLoadURL(webContents, serviceHomeTarget(service))
   if (panelWindow && !panelWindow.isVisible()) showPanelWindow()
   updateVisibleStates()
   pushSnapshot()
@@ -1249,11 +1941,11 @@ function ensureServiceLoaded(key) {
   if (loadedServiceKeys.has(key)) return
   const view = serviceViews.get(key)
   const service = findService(key)
-  if (view && service && !view.webContents.isDestroyed()) {
-    // Managed mailbox tabs keep a broad /mail/<mailbox>/ root URL for routing,
-    // but first load should land on the focused Inbox home, not the wider OWA
-    // shell. The primary Mail tab stays unrestricted and still loads /mail/.
-    safeLoadURL(view.webContents, service.mailboxManaged ? (service.home || service.url) : service.url)
+  const contents = liveWebContents(view)
+  if (contents && service) {
+    // Mail tabs keep a broad /mail root URL for routing, but first load should
+    // land on the focused Inbox home so the message list exists for scraping.
+    safeLoadURL(contents, serviceInitialTarget(service))
     loadedServiceKeys.add(key)
   }
 }
@@ -1303,6 +1995,19 @@ function loadInServiceView(view, serviceKey, url) {
 // right tab. Only visible tabs claim ownership — a hidden tab's links fall
 // through to the in-app/current-view fallback instead of surfacing a tab the
 // user removed from the sidebar. Returns the configured service object, or null.
+function isOutlookMailHost(host) {
+  const value = String(host || '').toLowerCase()
+  return (
+    value === 'outlook.office.com' ||
+    value === 'outlook.office365.com' ||
+    value === 'outlook.live.com' ||
+    value === 'outlook.cloud.microsoft' ||
+    value.endsWith('.outlook.office.com') ||
+    value.endsWith('.outlook.com') ||
+    value.endsWith('.outlook.cloud.microsoft')
+  )
+}
+
 function coreServiceForUrl(urlString) {
   let parsed
   try {
@@ -1320,12 +2025,7 @@ function coreServiceForUrl(urlString) {
     find(key) ||
     settings.services.find((service) => service.key === key && service.builtin)
 
-  const isOutlookHost =
-    host === 'outlook.office.com' ||
-    host === 'outlook.office365.com' ||
-    host === 'outlook.live.com' ||
-    host.endsWith('.outlook.office.com') ||
-    host.endsWith('.outlook.com')
+  const isOutlookHost = isOutlookMailHost(host)
 
   if (isOutlookHost && /\/calendar/i.test(route)) return find('calendar')
   if (isOutlookHost) {
@@ -1420,6 +2120,7 @@ function isMicrosoft365HomeHost(host) {
 }
 
 const MICROSOFT_365_LAUNCHER_KEYS = new Set([
+  'teams',
   'office',
   'word',
   'excel',
@@ -1513,7 +2214,7 @@ function openLinkInApp(url) {
     return
   }
   const view = serviceViews.get(activeServiceKey)
-  if (isAllowedHost(url, activeServiceKey) && view && !view.webContents.isDestroyed()) {
+  if (isAllowedHost(url, activeServiceKey) && liveWebContents(view)) {
     loadInServiceView(view, activeServiceKey, url)
     showService(activeServiceKey)
     return
@@ -1715,6 +2416,9 @@ function configurePartition(partitionName) {
     if (!allowed) {
       console.warn(`[permission] denied ${permission} for ${details.requestingUrl}`)
     }
+    if (permission === 'notifications') {
+      recordWebNotificationPermission(allowed, details.requestingUrl, webContents)
+    }
     callback(allowed)
   })
 
@@ -1776,6 +2480,13 @@ function configurePartition(partitionName) {
       if (sp) { entry.savePath = sp; entry.filename = path.basename(sp) }
       entry.speed = 0
       entry._item = null
+      if (state !== 'completed') {
+        entry.errorMessage = state === 'cancelled'
+          ? 'Download cancelled'
+          : state === 'interrupted'
+            ? 'Download interrupted'
+            : `Download ${state}`
+      }
       if (state === 'completed' && entry.savePath) {
         addDownloadHistory(entry)
         fireNotification(
@@ -1893,6 +2604,17 @@ function attachServiceView() {
     ensureServiceView(key)
   }
 
+  // Recovery states are rendered by the panel DOM. A BrowserView always sits on
+  // top of the renderer, so hide the failed single view to make the recovery
+  // actions visible instead of leaving a blank/errored rectangle.
+  if (!inSplit()) {
+    const activeHealth = serviceState[activeServiceKey]?.health
+    if (activeHealth && ['failed', 'blank', 'crashed', 'safe-mode'].includes(activeHealth.state)) {
+      detachAllViews()
+      return
+    }
+  }
+
   const keys = layoutKeys()
   if (!keys.length) {
     detachAllViews()
@@ -1955,6 +2677,77 @@ function attachServiceView() {
   }
   targetViews[0].setAutoResize({ width: false, height: false })
   targetViews[1].setAutoResize({ width: false, height: false })
+}
+
+function checkServiceBlankHealth(service, reason = 'timer') {
+  if (!service || !shouldReportBlankLoad(service.key)) return false
+  const currentView = serviceViews.get(service.key)
+  const currentContents = currentView && currentView.webContents
+  if (!currentContents || currentContents.isDestroyed() || (service.key !== 'teams' && currentContents.isLoading())) return false
+  currentContents.executeJavaScript(`(() => {
+    const text = document.body ? document.body.innerText.trim() : ''
+    const hasInteractive = Boolean(document.querySelector('input, textarea, button, [role="button"], [contenteditable="true"]'))
+    const hasLoginInput = Boolean(document.querySelector('input[type="password"], input[name="loginfmt"], input[name="passwd"], input[type="email"]'))
+    const visibleContentArea = Array.from(document.body ? document.body.querySelectorAll('body *') : [])
+      .slice(0, 300)
+      .reduce((max, el) => {
+        if (['SCRIPT', 'STYLE', 'META', 'LINK'].includes(el.tagName)) return max
+        const style = getComputedStyle(el)
+        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return max
+        const rect = el.getBoundingClientRect()
+        return Math.max(max, rect.width * rect.height)
+      }, 0)
+    return {
+      textLength: text.length,
+      hasInteractive,
+      hasVisibleContent: text.length > 0 || visibleContentArea > 1000,
+      hasLoginInput,
+      hasTeamsClearCache: Boolean(document.getElementById('error-action-clear-cache')),
+      hasTeamsRetry: Boolean(document.getElementById('error-action')),
+      href: location.href,
+      title: document.title || ''
+    }
+  })()`, true)
+    .then((health) => {
+      if (!health) return
+      const teamsBlankShell =
+        service.key === 'teams' &&
+        !health.hasLoginInput &&
+        health.textLength < 20 &&
+        (!health.hasVisibleContent || health.hasTeamsClearCache || health.hasTeamsRetry)
+      const healthyContent = service.key === 'teams'
+        ? health.hasVisibleContent
+        : (health.textLength > 0 || health.hasInteractive)
+      if (!teamsBlankShell && healthyContent) {
+        if (serviceState[service.key]?.health && serviceState[service.key].health.state !== 'ok') {
+          clearServiceHealth(service.key)
+        }
+        return
+      }
+      if (teamsBlankShell && maybeClickTeamsRecoveryAction(service.key, health)) return
+      const latestView = serviceViews.get(service.key)
+      const latestContents = latestView && latestView.webContents
+      setServiceHealth(service.key, {
+        state: 'blank',
+        message: teamsBlankShell ? 'Teams loaded its shell without chat content.' : 'The page loaded without visible content.',
+        code: 0,
+        url: health.href || (latestContents && !latestContents.isDestroyed() ? latestContents.getURL() : ''),
+        reason
+      })
+    })
+    .catch(() => {
+      if (service.key !== 'teams') return
+      const latestView = serviceViews.get(service.key)
+      const latestContents = latestView && latestView.webContents
+      setServiceHealth(service.key, {
+        state: 'blank',
+        message: 'Teams could not be inspected during blank-page health check.',
+        code: 0,
+        url: latestContents && !latestContents.isDestroyed() ? latestContents.getURL() : '',
+        reason
+      })
+    })
+  return true
 }
 
 function createServiceView(service) {
@@ -2034,7 +2827,7 @@ function createServiceView(service) {
     // Cross-app navigation into Teams requires explicit user confirmation.
     const internalService = resolveServiceByUrl(url)
     if (internalService) {
-      if (internalService.key === 'teams' && service.key !== 'teams') {
+      if (internalService.key === 'teams' && shouldConfirmTeamsNavigation(url, service)) {
         // Return deny synchronously, then prompt asynchronously.
         promptTeamsNavigation(url, service).then((choice) => {
           if (choice === 'teams') routeToService(internalService, url)
@@ -2058,7 +2851,7 @@ function createServiceView(service) {
 
   // Intercept both direct navigations and server-side redirect chains.
   // will-redirect fires when the server returns a 3xx; without this handler
-  // a redirect from an allowed host to teams.microsoft.com would slip past the
+  // a redirect from an allowed host to Teams would slip past the
   // will-navigate guard and land in Teams without a confirmation dialog.
   const handleNavRequest = (event, url) => {
     // Office app tabs bootstrap through the Microsoft 365 launcher, but Mail,
@@ -2071,7 +2864,7 @@ function createServiceView(service) {
     if (internalService) {
       if (internalService.key !== service.key) {
         event.preventDefault()
-        if (internalService.key === 'teams') {
+        if (internalService.key === 'teams' && shouldConfirmTeamsNavigation(url, service)) {
           promptTeamsNavigation(url, service).then((choice) => {
             if (choice === 'teams') routeToService(internalService, url)
             else if (choice === 'browser') openExternalSafe(url)
@@ -2090,6 +2883,49 @@ function createServiceView(service) {
 
   view.webContents.on('will-navigate', handleNavRequest)
   view.webContents.on('will-redirect', handleNavRequest)
+
+  view.webContents.on('did-start-loading', () => {
+    const state = serviceState[service.key]
+    const previousHealth = state && state.health
+    const preserveTeamsBlank =
+      service.key === 'teams' &&
+      previousHealth &&
+      ['blank', 'failed', 'safe-mode'].includes(previousHealth.state)
+    if (state && !preserveTeamsBlank) state.health = { state: 'loading', message: '', code: 0, at: Date.now() }
+    pushSnapshot()
+  })
+
+  view.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame || errorCode === -3) return
+    setServiceHealth(service.key, {
+      state: 'failed',
+      message: errorDescription || 'Page failed to load',
+      code: errorCode,
+      url: validatedURL || ''
+    })
+  })
+
+  view.webContents.on('render-process-gone', (_event, details) => {
+    const now = Date.now()
+    const crashes = (serviceCrashHistory.get(service.key) || []).filter((at) => now - at < CRASH_WINDOW_MS)
+    crashes.push(now)
+    serviceCrashHistory.set(service.key, crashes)
+    if (crashes.length >= CRASH_COOLDOWN_THRESHOLD) {
+      setServiceHealth(service.key, {
+        state: 'safe-mode',
+        message: `Renderer crashed ${crashes.length} times recently. Use repair before reloading again.`,
+        code: details && typeof details.exitCode === 'number' ? details.exitCode : 0,
+        url: view.webContents.getURL()
+      })
+      return
+    }
+    setServiceHealth(service.key, {
+      state: 'crashed',
+      message: details && details.reason ? `Renderer ${details.reason}` : 'Renderer stopped',
+      code: details && typeof details.exitCode === 'number' ? details.exitCode : 0,
+      url: view.webContents.getURL()
+    })
+  })
 
   view.webContents.on('page-title-updated', (_event, title) => {
     const state = serviceState[service.key]
@@ -2132,6 +2968,7 @@ function createServiceView(service) {
   })
 
   view.webContents.on('did-finish-load', () => {
+    if (service.key !== 'teams') clearServiceHealth(service.key)
     // A reload resets the webContents mute flag, so re-assert it if still snoozed.
     applyServiceMute(service.key)
     // Navigation/reload resets Chromium's zoom to 100%; re-apply the user's
@@ -2153,6 +2990,9 @@ function createServiceView(service) {
       setTimeout(() => refreshFeed(service.key), 8000)
     }
     if (service.key === 'mail') scheduleMailboxDiscover()
+    setTimeout(() => {
+      checkServiceBlankHealth(service, 'did-finish-load')
+    }, 2500)
   })
 
   view.webContents.on('found-in-page', (_event, result) => {
@@ -2209,17 +3049,29 @@ function syncDiscoveredMailboxes(mailboxes, discoveredPrimaryEmail = '') {
       .replace(/[\u200B-\u200D\u2060\uFEFF\uFFFD\uE000-\uF8FF\u25A0-\u25A1]/g, '')
       .trim() || 'Mail'
   // Discovered mailbox URLs come from scraping the OWA DOM, so they're untrusted.
-  // Pin them to the same origin as the (URL-locked) primary mailbox: a shared
-  // mailbox always lives on the same Outlook host. Anything else is dropped so a
-  // tampered/compromised page can't persist an arbitrary https tab as a mailbox.
-  let mailHost = ''
-  try { mailHost = new URL(findService('mail').url).hostname.toLowerCase() } catch { /* ignore */ }
+  // Pin them to known Outlook hosts for the configured or currently loaded
+  // primary mailbox. Microsoft can redirect Mail from outlook.office.com to
+  // outlook.cloud.microsoft, so validating against only the saved URL drops
+  // legitimate shared mailboxes after that cloud redirect.
+  const mailHosts = new Set()
+  const addMailHost = (value) => {
+    try {
+      const host = new URL(value).hostname.toLowerCase()
+      if (isOutlookMailHost(host)) mailHosts.add(host)
+    } catch {
+      /* ignore */
+    }
+  }
+  const mailService = findService('mail')
+  addMailHost(mailService && mailService.url)
+  addMailHost(mailService && mailService.home)
+  addMailHost(serviceState.mail && serviceState.mail.href)
   const safeMailboxUrl = (value) => {
-    if (typeof value !== 'string' || !mailHost) return null
+    if (typeof value !== 'string' || !mailHosts.size) return null
     let parsed
     try { parsed = new URL(value) } catch { return null }
     if (parsed.protocol !== 'https:') return null
-    if (parsed.hostname.toLowerCase() !== mailHost) return null
+    if (!mailHosts.has(parsed.hostname.toLowerCase())) return null
     return parsed.toString()
   }
   const isPrimaryMailboxUrl = (value) => {
@@ -2264,13 +3116,7 @@ function syncDiscoveredMailboxes(mailboxes, discoveredPrimaryEmail = '') {
     const home = mailboxHomeUrl(origin, mbEmail) || safeMailboxUrl(mb.home) || discoveredUrl
     candidates.push({ key, label, url, home })
   }
-  const discoveredKeys = new Set(candidates.map((candidate) => candidate.key))
-  const services = settings.services.filter((service) => {
-    if (!service.mailboxManaged) return true
-    if (discoveredKeys.has(service.key)) return true
-    changed = true
-    return false
-  })
+  const services = settings.services.slice()
   const mailIndex = services.findIndex((s) => s.key === 'mail')
   let insertAt = mailIndex === -1 ? services.length : mailIndex + 1
   for (const candidate of candidates) {
@@ -2329,7 +3175,8 @@ function prunePrimaryMailboxDuplicates() {
 
 function discoverMailboxes() {
   const view = serviceViews.get('mail')
-  if (!view || view.webContents.isDestroyed()) return
+  const contents = liveWebContents(view)
+  if (!contents) return
   const href = (serviceState.mail && serviceState.mail.href) || ''
   try {
     const host = new URL(href || 'https://outlook.office.com/mail/').hostname
@@ -2337,7 +3184,7 @@ function discoverMailboxes() {
   } catch {
     /* ignore */
   }
-  view.webContents
+  contents
     .executeJavaScript(MAILBOX_DISCOVER, true)
     .then((result) => {
       if (result && Array.isArray(result.mailboxes)) syncDiscoveredMailboxes(result.mailboxes, result.primaryEmail)
@@ -2508,6 +3355,23 @@ const MAIL_SCRAPE = `(() => {
     // OWA mixes icon-font glyphs (Private Use Area) and zero-width characters
     // into row text — they render as □ squares, so strip them everywhere.
     const strip = (s) => s.replace(/[\\u200B-\\u200D\\u2060\\uFEFF\\uFFFD\\uE000-\\uF8FF]/g, '').trim();
+    const unreadCountFrom = (s) => {
+      const text = strip(String(s || '')).replace(/\\s+/g, ' ');
+      const explicit = text.match(/\\b(\\d+)\\s+unread\\b/i);
+      if (explicit) return Math.max(0, parseInt(explicit[1], 10) || 0);
+      return /\\bunread\\b/i.test(text) ? 1 : 0;
+    };
+    const selectedInboxUnread = () => {
+      const treeItems = Array.from(document.querySelectorAll('[role="treeitem"]'));
+      for (const item of treeItems) {
+        const selected = item.getAttribute('aria-selected') === 'true' || item.getAttribute('aria-current') === 'page';
+        if (!selected) continue;
+        const blob = strip(item.getAttribute('aria-label') || item.innerText || item.textContent || '');
+        if (/\\bInbox\\b/i.test(blob)) return unreadCountFrom(blob);
+      }
+      return 0;
+    };
+    const folderUnread = selectedInboxUnread();
     const rows = Array.from(document.querySelectorAll('div[role="option"], div[role="listitem"], [data-convid]'));
     const items = [];
     const seen = new Set();
@@ -2520,7 +3384,7 @@ const MAIL_SCRAPE = `(() => {
       let unread = /\\bunread\\b/i.test(label)
         || row.querySelector('[aria-label*="Unread" i]')
         || row.querySelector('span[class*="unread" i]');
-      if (!unread && row.hasAttribute('aria-selected')) {
+      if (!unread && row.getAttribute('aria-selected') === 'true') {
         const spans = row.querySelectorAll('span');
         for (let s = 0; s < spans.length && s < 12; s++) {
           const w = getComputedStyle(spans[s]).fontWeight;
@@ -2568,7 +3432,18 @@ const MAIL_SCRAPE = `(() => {
       });
       if (items.length >= 10) break;
     }
-    return { state: items.length ? 'ok' : 'empty', items };
+    if (!items.length && folderUnread > 0) {
+      const label = folderUnread === 1 ? '1 unread email' : folderUnread + ' unread emails';
+      items.push({
+        sender: 'Inbox',
+        subject: label,
+        preview: 'Open Mail to view unread messages.',
+        id: 'inbox-unread-count\\x00' + folderUnread,
+        today: true,
+        isRead: false
+      });
+    }
+    return { state: items.length ? 'ok' : 'empty', items, unreadCount: folderUnread };
   } catch (e) { return { state: 'error', items: [] }; }
 })()`
 
@@ -2579,7 +3454,7 @@ const MAILBOX_DISCOVER = `(() => {
     if (/^(login|account)\\./i.test(host) || document.querySelector('input[name="loginfmt"]')) {
       return { mailboxes: [] };
     }
-    if (!/outlook\\.(office|live)\\.com/i.test(host) && !host.includes('outlook.office365')) {
+    if (!/outlook\\.(office|live)\\.com/i.test(host) && !host.includes('outlook.office365') && !/(^|\\.)outlook\\.cloud\\.microsoft$/i.test(host)) {
       return { mailboxes: [] };
     }
     const origin = location.origin;
@@ -2894,6 +3769,8 @@ function normalizeFeedResult(feed, result) {
 // replaced, so repeated polls don't churn the sidebar.
 function applyFeedResult(key, feed, result, { trusted = false } = {}) {
   result = normalizeFeedResult(feed, result)
+  feed.lastRefreshAt = Date.now()
+  feed.lastError = ''
   const isActive = key === activeServiceKey
   const hadCache = Array.isArray(feed.items) && feed.items.length > 0
   const gotItems = result.items.length > 0
@@ -2926,10 +3803,19 @@ async function refreshFeedFromApi(key, feed) {
   if (!result) {
     // No token / auth error — keep the cached list, but if we have nothing to
     // show, signal that a (re)connect is needed.
+    feed.lastRefreshAt = Date.now()
+    feed.lastError = 'Reconnect required'
     if ((!Array.isArray(feed.items) || !feed.items.length) && feed.state !== 'auth') {
       feed.state = 'auth'
       pushSnapshot()
     }
+    return
+  }
+  if (feed.kind === 'asana' && result.state === 'error') {
+    feed.lastRefreshAt = Date.now()
+    feed.lastError = result.error || 'Asana API refresh failed'
+    recordServiceFailure(key, 'asana-api', feed.lastError, result.status || 0, '')
+    refreshFeedFromScrape(key, feed, { ignoreApiOwnership: true, apiFallback: true })
     return
   }
   let changed = applyFeedResult(key, feed, result, { trusted: true })
@@ -2947,7 +3833,7 @@ async function refreshFeedFromApi(key, feed) {
     const effectiveUnread = typeof unread === 'number'
       ? unread
       : (serviceState[key] ? serviceState[key].unreadCount : 0)
-    diffAndNotifyMail(feed.items, effectiveUnread, key)
+    diffAndNotifyMail(feed.items, effectiveUnread, key, { knownEmptyBaseline: true })
   } else if (feed.kind === 'asana') {
     if (serviceState[key] && serviceState[key].unreadCount !== feed.items.length) {
       serviceState[key].unreadCount = feed.items.length
@@ -2960,63 +3846,50 @@ async function refreshFeedFromApi(key, feed) {
   if (changed) pushSnapshot()
 }
 
-function refreshFeed(key) {
-  const feed = serviceFeeds[key]
-  if (!feed) {
-    return
-  }
-  // When the provider behind this feed is connected, prefer the API entirely.
-  // Shared Outlook mailboxes need their own view scrape; Graph's /me inbox would
-  // duplicate the primary inbox under every discovered mailbox.
-  if (apiOwnsFeed(key)) {
-    refreshFeedFromApi(key, feed).catch((err) => {
-      // Surface the real reason — a 403 (missing Graph consent), 5xx, or parse
-      // error otherwise vanishes here and looks like "the API just doesn't work".
-      console.warn(`[feed] ${key} API refresh failed:`, (err && err.message) || err)
-      if (!Array.isArray(feed.items) || !feed.items.length) {
-        feed.state = 'error'
-        pushSnapshot()
-      }
-    })
-    return
-  }
-
+function refreshFeedFromScrape(key, feed, options = {}) {
   const service = findService(key)
   const view = serviceViews.get(key)
-  if (!view || view.webContents.isDestroyed() || view.webContents.isLoading()) {
-    return
+  const contents = liveWebContents(view)
+  if (!contents || contents.isLoading()) {
+    return false
   }
   const script = feed.kind === 'mail' ? MAIL_SCRAPE : feed.kind === 'asana' ? ASANA_SCRAPE : feed.kind === 'calendar' ? CALENDAR_SCRAPE : null
   if (!script) {
-    return
+    return false
   }
   const gen = feed.gen || 0
-  view.webContents
+  contents
     .executeJavaScript(script, true)
     .then((result) => {
       // Drop scrape results that resolve after the provider connected (or the
-      // feed was otherwise reset) — the API owns the feed from that moment.
+      // feed was otherwise reset) — unless this scrape is an explicit API
+      // fallback for Asana after the API refused/timed out.
       if ((feed.gen || 0) !== gen) return
-      if (connections.feedIsLive(feed.kind) && !(feed.kind === 'mail' && service && service.mailboxManaged)) return
+      if (!options.ignoreApiOwnership && connections.feedIsLive(feed.kind) && !(feed.kind === 'mail' && service && service.mailboxManaged)) return
       if (result && Array.isArray(result.items)) {
         // Cache rule lives in applyFeedResult: good data always wins, an
         // empty/error result is only trusted when this tab is ACTIVE, and an
         // identical scrape leaves the cached list untouched (no churn).
         let changed = applyFeedResult(key, feed, result)
+        if (options.apiFallback && result.items.length) {
+          feed.lastError = ''
+          recordServiceFailure(key, 'asana-api-fallback', 'Asana API failed, but web scrape recovered the task list.', 0, '')
+        }
 
         // Scraped items now carry the same fields the API path produces
         // (ids, startIso), so the same notification diffing applies pre-connect.
         if (feed.kind === 'mail') {
           const mailState = serviceState[key]
           const scrapedUnread = feed.items.filter((item) => item && item.isRead === false).length
-          const visibleUnread = service && service.mailboxManaged
-            ? scrapedUnread
-            : mailState ? mailState.unreadCount : 0
-          if (service && service.mailboxManaged && mailState && mailState.unreadCount !== visibleUnread) {
+          const folderUnread = result && typeof result.unreadCount === 'number' ? Math.max(0, result.unreadCount) : null
+          const visibleUnread = folderUnread === null ? scrapedUnread : Math.max(folderUnread, scrapedUnread)
+          if (mailState && mailState.unreadCount !== visibleUnread) {
             mailState.unreadCount = visibleUnread
             changed = true
           }
-          diffAndNotifyMail(feed.items, visibleUnread, key)
+          diffAndNotifyMail(feed.items, visibleUnread, key, {
+            knownEmptyBaseline: key === activeServiceKey && panelWindow && panelWindow.isFocused()
+          })
         } else if (feed.kind === 'asana') {
           // Badge mirrors the visible task count, same as the API path.
           if (serviceState[key] && serviceState[key].unreadCount !== feed.items.length) {
@@ -3032,11 +3905,47 @@ function refreshFeed(key) {
     })
     .catch(() => {
       // Network/scrape failure: keep cached items, only flag error if empty.
+      feed.lastRefreshAt = Date.now()
+      feed.lastError = options.apiFallback
+        ? (feed.lastError || 'Asana API failed and web fallback scrape failed')
+        : 'Scrape refresh failed'
       if ((!Array.isArray(feed.items) || !feed.items.length) && feed.state !== 'error') {
         feed.state = 'error'
         pushSnapshot()
       }
     })
+  return true
+}
+
+function refreshFeed(key) {
+  const feed = serviceFeeds[key]
+  if (!feed) {
+    return
+  }
+  if (!networkOnline) {
+    feed.lastError = 'Offline'
+    pushSnapshot()
+    return
+  }
+  // When the provider behind this feed is connected, prefer the API entirely.
+  // Shared Outlook mailboxes need their own view scrape; Graph's /me inbox would
+  // duplicate the primary inbox under every discovered mailbox.
+  if (apiOwnsFeed(key)) {
+    refreshFeedFromApi(key, feed).catch((err) => {
+      // Surface the real reason — a 403 (missing Graph consent), 5xx, or parse
+      // error otherwise vanishes here and looks like "the API just doesn't work".
+      console.warn(`[feed] ${key} API refresh failed:`, (err && err.message) || err)
+      feed.lastRefreshAt = Date.now()
+      feed.lastError = (err && err.message) || 'API refresh failed'
+      if (!Array.isArray(feed.items) || !feed.items.length) {
+        feed.state = 'error'
+        pushSnapshot()
+      }
+    })
+    return
+  }
+
+  refreshFeedFromScrape(key, feed)
 }
 
 function refreshFeeds() {
@@ -3070,12 +3979,34 @@ function refreshFeeds() {
     // like they require clicking the inbox first.
     if (!loadedServiceKeys.has(key)) continue
     const view = serviceViews.get(key)
-    if (!view || view.webContents.isDestroyed()) continue
+    if (!liveWebContents(view)) continue
     const hiddenGap = serviceFeeds[key].kind === 'mail' ? HIDDEN_MAIL_SCRAPE_MS : HIDDEN_SCRAPE_MS
     if (!visible && now - (lastScrapeAt[key] || 0) < hiddenGap) continue
     lastScrapeAt[key] = now
     refreshFeed(key)
   }
+  for (const service of settings.services.filter((item) => item.visible && loadedServiceKeys.has(item.key))) {
+    if (!shouldReportBlankLoad(service.key)) continue
+    if (now - (lastBlankHealthAt[service.key] || 0) < BLANK_HEALTH_SWEEP_MS) continue
+    lastBlankHealthAt[service.key] = now
+    checkServiceBlankHealth(service, 'timer')
+  }
+  markStaleFeeds()
+}
+
+function markStaleFeeds() {
+  let changed = false
+  const now = Date.now()
+  for (const [key, feed] of Object.entries(serviceFeeds)) {
+    if (!feed || !feed.lastRefreshAt) continue
+    if (now - feed.lastRefreshAt <= STALE_FEED_MS) continue
+    if (feed.lastError !== 'Feed stale') {
+      recordServiceFailure(key, 'feed-stale', `No successful refresh for ${Math.round((now - feed.lastRefreshAt) / 60000)} minutes.`, 0, '')
+      feed.lastError = 'Feed stale'
+      changed = true
+    }
+  }
+  if (changed) pushSnapshot()
 }
 
 function refreshApiFeedsNow() {
@@ -3346,6 +4277,72 @@ function hideMenuWindow() {
   }
 }
 
+function setupHealth() {
+  const conn = connections.getStatus()
+  const microsoftApiConnected = conn.microsoft && conn.microsoft.status === 'connected'
+  const microsoftWebSession = hasMicrosoftWebSession()
+  const checks = []
+  const add = (key, label, ok, detail, action = '') => {
+    checks.push({ key, label, ok: Boolean(ok), detail: detail || '', action })
+  }
+  add(
+    'network',
+    'Network',
+    networkOnline,
+    networkOnline ? 'Online' : 'Offline. Feed refreshes are paused until the network returns.',
+    'diagnostics'
+  )
+  add(
+    'microsoft',
+    'Microsoft account',
+    microsoftApiConnected || microsoftWebSession,
+    microsoftApiConnected
+      ? 'Connected through Microsoft Graph.'
+      : microsoftWebSession
+        ? 'Signed in through Microsoft web session. Connect Microsoft in Settings for Graph feeds and Teams presence controls.'
+        : 'Sign in to Microsoft or connect Microsoft in Settings for Mail, Calendar, Teams, and SSO.',
+    'connections'
+  )
+  add(
+    'asana',
+    'Asana account',
+    conn.asana && conn.asana.status === 'connected',
+    findService('asana')?.visible ? 'Connect Asana for task feed notifications.' : 'Hidden, optional.',
+    'connections'
+  )
+  add(
+    'notifications',
+    'Notification arming',
+    true,
+    'Notifications are armed automatically.',
+    'notifications'
+  )
+  if (settings.debugging && settings.debugging.enabled) {
+    const recentMicrosoft = (settings.serviceFailureLog || []).filter((item) => partitionKeysForRepair('microsoft').includes(item.serviceKey) && Date.now() - (item.at || 0) < 30 * 60 * 1000)
+    const recentAsana = (settings.serviceFailureLog || []).filter((item) => partitionKeysForRepair('asana').includes(item.serviceKey) && Date.now() - (item.at || 0) < 30 * 60 * 1000)
+    add('session-microsoft', 'Microsoft session', recentMicrosoft.length < 5, recentMicrosoft.length ? `${recentMicrosoft.length} recent session/page events.` : 'No recent session failures.', 'debugging')
+    add('session-asana', 'Asana session', recentAsana.length < 5, recentAsana.length ? `${recentAsana.length} recent session/page events.` : 'No recent session failures.', 'debugging')
+  }
+  for (const service of settings.services.filter((s) => s.visible)) {
+    const feed = serviceFeeds[service.key]
+    const health = serviceState[service.key]?.health
+    if (health && ['failed', 'blank', 'crashed', 'safe-mode'].includes(health.state)) {
+      add(`service-${service.key}`, `${service.label} page`, false, health.message || 'Page needs repair.', 'repair')
+    } else if (feed) {
+      const stale = feed.lastRefreshAt && Date.now() - feed.lastRefreshAt > STALE_FEED_MS
+      add(
+        `feed-${service.key}`,
+        `${service.label} feed`,
+        feed.state !== 'error' && feed.state !== 'auth' && !stale,
+        feed.state === 'error' ? (feed.lastError || 'Feed refresh failed.') : feed.state === 'auth' ? 'Reconnect required.' : stale ? 'Feed has not refreshed recently.' : `${feed.items.length} items`,
+        feed.state === 'auth' ? 'connections' : 'diagnostics'
+      )
+    }
+  }
+  const failed = checks.filter((check) => !check.ok).length
+  return { status: failed ? 'attention' : 'ok', failed, checks }
+}
+
 
 /* ---------- Snapshot ---------- */
 function getSnapshot() {
@@ -3359,6 +4356,7 @@ function getSnapshot() {
     sidebarCollapsed,
     sidebarExpandedWidth,
     collapseMode: settings.collapseMode,
+    uiDensity: settings.uiDensity,
     taskProvider: settings.taskProvider,
     notif: settings.notif,
     feedPrefs: settings.feedPrefs || {},
@@ -3367,6 +4365,8 @@ function getSnapshot() {
     downloadHistory: settings.downloadHistory || [],
     downloadPrefs: settings.downloads || {},
     diagnostics: getDiagnostics(),
+    setupHealth: setupHealth(),
+    debugging: settings.debugging || {},
     firstBoot,
     onboarded: Boolean(settings.onboarded),
     notifSetupSkipped: Boolean(settings.notifSetupSkipped),
@@ -3399,6 +4399,7 @@ function getSnapshot() {
         title: state.title || label,
         unreadCount: state.unreadCount || 0,
         href: state.href || service.url,
+        health: state.health || { state: 'idle', message: '', code: 0, at: 0 },
         snoozed: isSnoozed(service.key),
         feedCollapsed: Boolean((settings.feedCollapsed || {})[service.key]),
         feed: feed ? { kind: feed.kind, state: feed.state, items: feed.items } : null
@@ -3407,13 +4408,8 @@ function getSnapshot() {
   }
 }
 
-function hasConnectedApiProvider() {
-  const status = connections.getStatus()
-  return ['microsoft', 'asana'].some((provider) => status[provider] && status[provider].status === 'connected')
-}
-
 function armNotificationsForConnectedProviders() {
-  if (!settings.onboarded && hasConnectedApiProvider()) {
+  if (!settings.onboarded) {
     settings = store.save({ ...settings, onboarded: true, notifSetupSkipped: false })
   }
 }
@@ -3473,6 +4469,7 @@ function exportPortableSettings() {
     exportedAt: new Date().toISOString(),
     settings: {
       theme: settings.theme,
+      uiDensity: settings.uiDensity,
       collapseMode: settings.collapseMode,
       taskProvider: settings.taskProvider,
       notif: settings.notif,
@@ -3495,6 +4492,77 @@ function exportPortableSettings() {
   }).catch((e) => console.error('[settings] export failed:', e && e.message))
 }
 
+function buildDebugReport() {
+  const diag = getDiagnostics()
+  const health = setupHealth()
+  return {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    app: {
+      name: APP_NAME,
+      version: app.getVersion(),
+      platform: process.platform,
+      arch: process.arch,
+      electron: process.versions.electron,
+      chrome: process.versions.chrome,
+      node: process.versions.node,
+      uptimeSeconds: Math.round(process.uptime())
+    },
+    runtime: {
+      activeServiceKey,
+      splitKeys: inSplit() ? splitKeys.slice() : [],
+      splitOrientation,
+      networkOnline,
+      prewarmActive,
+      prewarmCurrentKey,
+      prewarmQueue: prewarmQueue.slice(),
+      loadedServiceKeys: Array.from(loadedServiceKeys),
+      settingsOpen
+    },
+    diagnostics: diag,
+    setupHealth: health,
+    microsoftAuthEvents: microsoftAuthEvents.slice(0, MICROSOFT_AUTH_EVENT_MAX),
+    services: settings.services.map((service) => ({
+      key: service.key,
+      label: service.label,
+      visible: service.visible,
+      builtin: Boolean(service.builtin),
+      mailboxManaged: Boolean(service.mailboxManaged),
+      feed: service.feed || '',
+      health: serviceState[service.key]?.health || null
+    })),
+    downloads: Array.from(downloads.values()).map((item) => ({
+      id: item.id,
+      filename: item.filename,
+      state: item.state,
+      receivedBytes: item.receivedBytes,
+      totalBytes: item.totalBytes,
+      retryable: Boolean(item.retryable),
+      errorMessage: item.errorMessage || '',
+      url: item.url || '',
+      startTime: item.startTime || item.startedAt || null,
+      endTime: item.endTime || null
+    })),
+    failureLog: settings.serviceFailureLog || []
+  }
+}
+
+function exportDebugReport() {
+  if (!panelWindow || panelWindow.isDestroyed()) return
+  if (!(settings.debugging && settings.debugging.enabled)) return
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  dialog.showSaveDialog(panelWindow, {
+    title: 'Export MailStudio Debug Report',
+    defaultPath: path.join(app.getPath('documents'), `mailstudio-debug-report-${stamp}.json`),
+    filters: [{ name: 'JSON', extensions: ['json'] }]
+  }).then(({ canceled, filePath }) => {
+    if (canceled || !filePath) return
+    writeOwnerOnlyFile(filePath, JSON.stringify(buildDebugReport(), null, 2))
+    recordDebugEvent('debug-report-exported', 'Debug report exported', path.basename(filePath), activeServiceKey)
+    pushSnapshot()
+  }).catch((e) => console.error('[debug] export failed:', e && e.message))
+}
+
 function importPortableSettings() {
   if (!panelWindow || panelWindow.isDestroyed()) return
   dialog.showOpenDialog(panelWindow, {
@@ -3508,6 +4576,7 @@ function importPortableSettings() {
     applySettings({
       ...settings,
       theme: imported.theme,
+      uiDensity: imported.uiDensity,
       collapseMode: imported.collapseMode,
       taskProvider: imported.taskProvider,
       notif: imported.notif,
@@ -3545,10 +4614,14 @@ function restorePersistedLayout() {
   }
 }
 
-function saveWorkspace(name) {
+function saveWorkspace(name, options = {}) {
+  const icon = typeof options.icon === 'string' && /^[A-Za-z0-9]{1,3}$/.test(options.icon.trim()) ? options.icon.trim().slice(0, 3) : ''
+  const color = typeof options.color === 'string' && /^#[0-9a-f]{6}$/i.test(options.color) ? options.color.toLowerCase() : '#3b82f6'
   const workspace = {
     id: `workspace-${Date.now()}`,
     name: String(name || '').trim().slice(0, 80) || `Workspace ${(settings.workspaces || []).length + 1}`,
+    icon,
+    color,
     activeServiceKey,
     splitKeys: inSplit() ? splitKeys.slice() : [],
     splitOrientation,
@@ -3585,6 +4658,72 @@ function deleteWorkspace(id) {
   pushSnapshot()
 }
 
+function duplicateWorkspace(id) {
+  const workspace = (settings.workspaces || []).find((item) => item.id === id)
+  if (!workspace) return
+  const copy = {
+    ...workspace,
+    id: `workspace-${Date.now()}`,
+    name: `${workspace.name || 'Workspace'} copy`.slice(0, 80)
+  }
+  settings = store.save({ ...settings, workspaces: [copy, ...(settings.workspaces || [])].slice(0, 20) })
+  pushSnapshot()
+}
+
+function updateWorkspace(id, patch = {}) {
+  const workspaces = (settings.workspaces || []).map((item) => {
+    if (item.id !== id) return item
+    const next = { ...item }
+    if (typeof patch.name === 'string' && patch.name.trim()) next.name = patch.name.trim().slice(0, 80)
+    if (typeof patch.icon === 'string' && /^[A-Za-z0-9]{1,3}$/.test(patch.icon.trim())) next.icon = patch.icon.trim().slice(0, 3)
+    if (typeof patch.color === 'string' && /^#[0-9a-f]{6}$/i.test(patch.color)) next.color = patch.color.toLowerCase()
+    return next
+  })
+  settings = store.save({ ...settings, workspaces })
+  pushSnapshot()
+}
+
+function partitionKeysForRepair(kind) {
+  if (kind === 'asana') return settings.services.filter((service) => service.key === 'asana').map((service) => service.key)
+  return settings.services.filter((service) => isMicrosoftService(service)).map((service) => service.key)
+}
+
+function repairPartition(kind) {
+  if (kind === 'microsoft') {
+    recordServiceFailure(activeServiceKey, 'partition-soft-repair', 'Running Microsoft session soft repair.', 0, '')
+    runMicrosoftSessionHealthSweep('manual-repair').catch((err) => {
+      recordMicrosoftAuthEvent({
+        provider: 'microsoft',
+        type: 'session-health-error',
+        stage: 'manual-repair',
+        message: err && err.message ? err.message : 'manual repair failed',
+        loginHint: microsoftLoginHint()
+      })
+    })
+    return
+  }
+  const partition = kind === 'asana' ? ASANA_SESSION_PARTITION : MICROSOFT_SESSION_PARTITION
+  const keys = partitionKeysForRepair(kind)
+  const partitionSession = session.fromPartition(partition)
+  recordServiceFailure(keys[0] || activeServiceKey, 'partition-repair', `Repairing ${kind} session partition`, 0, '')
+  Promise.all([
+    partitionSession.clearCache().catch(() => {}),
+    partitionSession.clearStorageData({
+      storages: ['cookies', 'localstorage', 'indexdb', 'shadercache', 'serviceworkers', 'cachestorage']
+    }).catch(() => {})
+  ]).finally(() => {
+    for (const key of keys) {
+      forceUnloadServiceView(key)
+      if (serviceState[key]) serviceState[key].health = { state: 'idle', message: '', code: 0, at: Date.now() }
+      loadedServiceKeys.delete(key)
+    }
+    if (keys.includes(activeServiceKey)) ensureServiceLoaded(activeServiceKey)
+    attachServiceView()
+    refreshFeeds()
+    pushSnapshot()
+  })
+}
+
 function stringOrNull(value) {
   return typeof value === 'string' && value ? value : null
 }
@@ -3616,12 +4755,14 @@ function repairService(serviceKey, action) {
   const service = findService(serviceKey)
   if (!service) return
   const view = serviceViews.get(serviceKey)
+  const contents = liveWebContents(view)
+  recordServiceFailure(serviceKey, 'repair', `Repair action: ${action}`, 0, (serviceState[serviceKey] || {}).href || service.url)
   if (action === 'reload') {
-    if (view && !view.webContents.isDestroyed()) view.webContents.reload()
+    if (contents) contents.reload()
     return
   }
   if (action === 'force-reload') {
-    if (view && !view.webContents.isDestroyed()) view.webContents.reloadIgnoringCache()
+    if (contents) contents.reloadIgnoringCache()
     return
   }
   if (action === 'open-external') {
@@ -3629,10 +4770,20 @@ function repairService(serviceKey, action) {
     return
   }
   if (action === 'reset-home') {
-    if (view && !view.webContents.isDestroyed()) {
+    if (contents) {
       loadedServiceKeys.add(serviceKey)
-      safeLoadURL(view.webContents, service.home || service.url)
+      safeLoadURL(contents, serviceHomeTarget(service))
     }
+    return
+  }
+  if (action === 'teams-cloud-reset' && serviceKey === 'teams') {
+    const teamsUrl = 'https://teams.cloud.microsoft/'
+    if (contents) {
+      loadedServiceKeys.add(serviceKey)
+      safeLoadURL(contents, teamsUrl)
+    }
+    serviceState[serviceKey].href = teamsUrl
+    clearServiceHealth(serviceKey)
     return
   }
   if (action === 'clear-session') {
@@ -3643,7 +4794,7 @@ function repairService(serviceKey, action) {
         storages: ['cookies', 'localstorage', 'indexdb', 'shadercache', 'serviceworkers', 'cachestorage']
       }).catch(() => {})
     ]).finally(() => {
-      hibernateServiceView(serviceKey)
+      forceUnloadServiceView(serviceKey)
       ensureServiceView(serviceKey)
       loadedServiceKeys.delete(serviceKey)
       if (activeServiceKey === serviceKey) {
@@ -3838,11 +4989,13 @@ function registerIpc() {
         if (command.settings) {
           applySettings({
             ...settings,
+            uiDensity: command.settings.uiDensity || settings.uiDensity,
             collapseMode: command.settings.collapseMode || settings.collapseMode,
             taskProvider: command.settings.taskProvider || settings.taskProvider,
             notif: mergeObjectSetting(settings.notif, command.settings.notif),
             feedPrefs: mergeObjectSetting(settings.feedPrefs, command.settings.feedPrefs),
             downloads: mergeObjectSetting(settings.downloads, command.settings.downloads),
+            debugging: mergeObjectSetting(settings.debugging, command.settings.debugging),
             services: Array.isArray(command.settings.services) ? command.settings.services : settings.services
           })
         }
@@ -3850,14 +5003,23 @@ function registerIpc() {
       case 'export-settings':
         exportPortableSettings()
         break
+      case 'export-debug-report':
+        exportDebugReport()
+        break
       case 'import-settings':
         importPortableSettings()
         break
       case 'save-workspace':
-        saveWorkspace(command.name)
+        saveWorkspace(command.name, { icon: command.icon, color: command.color })
         break
       case 'apply-workspace':
         if (typeof command.id === 'string') applyWorkspace(command.id)
+        break
+      case 'duplicate-workspace':
+        if (typeof command.id === 'string') duplicateWorkspace(command.id)
+        break
+      case 'update-workspace':
+        if (typeof command.id === 'string') updateWorkspace(command.id, command)
         break
       case 'delete-workspace':
         if (typeof command.id === 'string') deleteWorkspace(command.id)
@@ -3868,6 +5030,11 @@ function registerIpc() {
         break
       case 'clear-download-history':
         settings = store.save({ ...settings, downloadHistory: [] })
+        pushSnapshot()
+        break
+      case 'clear-failure-log':
+        microsoftAuthEvents.length = 0
+        settings = store.save({ ...settings, serviceFailureLog: [] })
         pushSnapshot()
         break
       case 'send-test-notification':
@@ -3882,6 +5049,11 @@ function registerIpc() {
       case 'repair-service':
         if (typeof command.serviceKey === 'string' && typeof command.action === 'string') {
           repairService(command.serviceKey, command.action)
+        }
+        break
+      case 'repair-partition':
+        if (command.partition === 'microsoft' || command.partition === 'asana') {
+          repairPartition(command.partition)
         }
         break
       case 'go-home':
@@ -3913,7 +5085,8 @@ function registerIpc() {
       case 'open-feed-item': {
         if (typeof command.serviceKey !== 'string') break
         const targetView = ensureServiceView(command.serviceKey)
-        if (targetView && !targetView.webContents.isDestroyed()) {
+        const targetContents = liveWebContents(targetView)
+        if (targetContents) {
           const feedKind = serviceFeeds[command.serviceKey] ? serviceFeeds[command.serviceKey].kind : null
           const feed = serviceFeeds[command.serviceKey]
           const recentItem = findFeedItem(feed, command)
@@ -3953,7 +5126,9 @@ function registerIpc() {
             // Validate idx is a safe non-negative integer before template interpolation.
             if (!Number.isInteger(idx) || idx < 0 || idx > 50000) break
             setTimeout(() => {
-              targetView.webContents
+              const liveContents = liveWebContents(targetView)
+              if (!liveContents) return
+              liveContents
                 .executeJavaScript(
                   `(() => { const rows = Array.from(document.querySelectorAll('div[role="option"], div[role="listitem"], [data-convid]')); const row = rows[${idx}]; if (row) { row.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); if (typeof row.focus === 'function') row.focus(); const target = row.querySelector('a[href], button[aria-label*="open" i]') || row; target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, detail: 1 })); target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window, detail: 1 })); target.click(); target.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window, detail: 2 })); row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true })); row.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true })); } })()`,
                   true
@@ -3964,7 +5139,9 @@ function registerIpc() {
             const idx = Math.trunc(command.rowIdx)
             if (!Number.isInteger(idx) || idx < 0 || idx > 50000) break
             setTimeout(() => {
-              targetView.webContents
+              const liveContents = liveWebContents(targetView)
+              if (!liveContents) return
+              liveContents
                 .executeJavaScript(
                   `(() => { let cards = Array.from(document.querySelectorAll('[data-automationid="CalendarEventItem"],[data-automationid="calendarAgendaItem"],[data-automationid="calendarListItem"]')); if (!cards.length) cards = Array.from(document.querySelectorAll('button[aria-label],[role="button"][aria-label]')).filter(el => /\\d{1,2}[:.]/i.test(el.getAttribute('aria-label')||'')); const card = cards[${idx}]; if (card) { card.click(); card.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } })()`,
                   true
@@ -3976,7 +5153,9 @@ function registerIpc() {
               const idx = Math.trunc(command.rowIdx)
               if (!Number.isInteger(idx) || idx < 0 || idx > 50000) break
               setTimeout(() => {
-                targetView.webContents
+                const liveContents = liveWebContents(targetView)
+                if (!liveContents) return
+                liveContents
                   .executeJavaScript(
                     `(() => { const rowFor = (el) => el.closest('[data-task-id], [data-testid*="task-row" i], [role="row"], [class*="TaskRow" i], [class*="taskRow" i]') || el; const taskSignal = (row) => row.querySelector('a[href*="/task/"], a[href*="/0/"], [data-task-id], [data-task-name], [aria-label*="mark complete" i], [aria-label*="complete task" i], [data-testid*="TaskCheckbox" i], [role="checkbox"], textarea, [contenteditable="true"]'); const selectors = ['[data-task-id]','a[href*="/task/"]','a[href*="/0/"]','[aria-label*="mark complete" i]','[aria-label*="complete task" i]','[data-testid*="TaskCheckbox" i]','[data-testid="task-row-content"]','[data-testid*="task-row" i]','[data-testid*="TaskRow"]','[class*="taskRow" i]','[class*="TaskRow" i]','.TaskRow','[role="row"]']; const raw = []; for (const s of selectors) raw.push(...Array.from(document.querySelectorAll(s))); const candidate = raw[${idx}]; const row = candidate ? rowFor(candidate) : null; if (row && taskSignal(row)) { row.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); const link = row.querySelector('a[href*="/task/"],a[href*="/0/"]'); if (link) link.click(); else row.click(); } })()`,
                     true
@@ -4064,13 +5243,17 @@ function registerIpc() {
           // hidden behind a service web page; restore them when sign-in settles.
           detachAllViews()
           connections
-            .connect(command.provider, { parentWindow: panelWindow })
+            .connect(command.provider, {
+              parentWindow: panelWindow,
+              loginHint: command.provider === 'microsoft' ? microsoftLoginHint() : ''
+            })
             .then(() => {
               // The OAuth popup signs into the shared MS session too, so a
               // Microsoft connect also warms the logged-in web views.
               if (command.provider === 'microsoft') {
                 finishFirstBoot()
                 refreshMicrosoftServicesAfterAuth(activeServiceKey)
+                runMicrosoftSessionHealthSweep('connect').catch(() => {})
               }
               // Scrapers are a pre-connect fallback only: drop their cached
               // items and baselines so the API owns the feeds from here on.
@@ -4163,34 +5346,50 @@ function registerIpc() {
         break
       case 'find-in-page': {
         const fView = serviceViews.get(activeServiceKey)
-        if (fView && !fView.webContents.isDestroyed() && typeof command.text === 'string' && command.text) {
-          fView.webContents.findInPage(command.text, { forward: command.forward !== false, findNext: !!command.findNext })
+        const fContents = liveWebContents(fView)
+        if (fContents && typeof command.text === 'string' && command.text) {
+          fContents.findInPage(command.text, { forward: command.forward !== false, findNext: !!command.findNext })
         } else if (!command.text) {
           const fViewStop = serviceViews.get(activeServiceKey)
-          if (fViewStop && !fViewStop.webContents.isDestroyed()) fViewStop.webContents.stopFindInPage('clearSelection')
+          const fStopContents = liveWebContents(fViewStop)
+          if (fStopContents) fStopContents.stopFindInPage('clearSelection')
           sendPanelEvent({ type: 'find-result', activeMatchOrdinal: 0, matches: 0 })
         }
         break
       }
       case 'stop-find-in-page': {
         const sView = serviceViews.get(activeServiceKey)
-        if (sView && !sView.webContents.isDestroyed()) sView.webContents.stopFindInPage('clearSelection')
+        const sContents = liveWebContents(sView)
+        if (sContents) sContents.stopFindInPage('clearSelection')
         sendPanelEvent({ type: 'find-result', activeMatchOrdinal: 0, matches: 0 })
         break
       }
       case 'network-online':
+        if (!networkOnline) recordDebugEvent('network-online', 'Network online', 'Renderer reported connectivity restored.', activeServiceKey)
+        networkOnline = true
         // Network came back — reload any feed-enabled views that are empty/errored
         // so the sidebar repopulates without waiting for the next 25 s poll.
         for (const nKey of Object.keys(serviceFeeds)) {
           const nView = serviceViews.get(nKey)
-          if (nView && !nView.webContents.isDestroyed()) {
+          const nContents = liveWebContents(nView)
+          if (nContents) {
             const nFeed = serviceFeeds[nKey]
             if (nFeed && (nFeed.state === 'error' || !nFeed.items.length)) {
-              nView.webContents.reload()
+              nContents.reload()
             }
           }
         }
         setTimeout(refreshFeeds, 4000)
+        setTimeout(() => runMicrosoftSessionHealthSweep('network-online').catch(() => {}), 2500)
+        pushSnapshot()
+        break
+      case 'network-offline':
+        if (networkOnline) recordDebugEvent('network-offline', 'Network offline', 'Renderer reported connectivity lost.', activeServiceKey)
+        networkOnline = false
+        for (const feed of Object.values(serviceFeeds)) {
+          if (feed) feed.lastError = 'Offline'
+        }
+        pushSnapshot()
         break
       // ---------- Download actions ----------
       case 'download-open':
@@ -4211,6 +5410,14 @@ function registerIpc() {
           if (dl && dl.state === 'progressing' && dl._item) {
             try { dl._item.cancel() } catch { /* ignore */ }
           }
+        }
+        break
+      case 'download-retry':
+        if (typeof command.id === 'number') {
+          const dl = downloads.get(command.id)
+          if (dl && dl.url) openLinkInApp(dl.url)
+        } else if (typeof command.url === 'string') {
+          openLinkInApp(command.url)
         }
         break
       case 'download-clear':
@@ -4249,9 +5456,19 @@ function showTabContextMenu(serviceKey) {
     items.push({ type: 'separator' })
   }
 
+  if (serviceKey === 'teams') {
+    items.push({ label: 'Teams repair', enabled: false })
+    items.push({ label: 'Reload Teams cloud app', click: () => repairService(serviceKey, 'reload') })
+    items.push({ label: 'Reset to Teams cloud', click: () => repairService(serviceKey, 'teams-cloud-reset') })
+    items.push({ label: 'Clear Teams session', click: () => repairService(serviceKey, 'clear-session') })
+    items.push({ label: 'Open Teams in browser', click: () => repairService(serviceKey, 'open-external') })
+    items.push({ type: 'separator' })
+  }
+
   items.push({ label: `Reload ${service.label}`, click: () => {
     const v = serviceViews.get(serviceKey)
-    if (v && !v.webContents.isDestroyed()) v.webContents.reload()
+    const contents = liveWebContents(v)
+    if (contents) contents.reload()
   } })
   items.push({ label: `Force Reload ${service.label}`, click: () => repairService(serviceKey, 'force-reload') })
   items.push({ label: `Reset ${service.label} to Home`, click: () => repairService(serviceKey, 'reset-home') })
@@ -4312,6 +5529,7 @@ app.whenReady().then(() => {
   }
 
   settings = store.load()
+  restoreNotificationEngineState()
   firstBoot = Boolean(settings.firstBoot)
   sidebarExpandedWidth = settings.sidebarWidth || 280
   restorePersistedLayout()
@@ -4328,6 +5546,7 @@ app.whenReady().then(() => {
   connections.init({
     config: settings.connections,
     partitionForProvider,
+    onAuthEvent: recordMicrosoftAuthEvent,
     onChange: () => {
       refreshApiFeedsNow()
       pushSnapshot()
@@ -4349,6 +5568,7 @@ app.whenReady().then(() => {
   createMenuWindow()
   startFeedTimer()
   startReaperTimer()
+  startMicrosoftSessionHealthTimer()
   showService(activeServiceKey)
   // Once the active tab has settled, prewarm the rest in the background so every
   // tab's notifications and sidebar go live without being clicked — staggered to

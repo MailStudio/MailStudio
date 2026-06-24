@@ -183,8 +183,7 @@ async function main() {
     if (panelBefore.firstBoot) issues.push('first-boot overlay still active after login')
     const blankServices = serviceHealth.filter((service) =>
       service.blankLike &&
-      !service.hasLoginInput &&
-      service.host !== 'teams.microsoft.com'
+      !service.hasLoginInput
     )
     if (blankServices.length) issues.push(`blank service pages: ${blankServices.map((s) => s.host).join(', ')}`)
 

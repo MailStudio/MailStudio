@@ -15,6 +15,15 @@ const ASANA = 'https://app.asana.com/api/1.0'
 // the caller can refresh-and-retry (or drop the provider to disconnected).
 class AuthError extends Error {}
 
+class ApiError extends Error {
+  constructor(message, status, body) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.body = body || null
+  }
+}
+
 // A 429 (or 503 carrying a Retry-After header) means the API wants us to back
 // off — surfaced with the requested pause so the caller can cool down without
 // touching connection state.
@@ -52,7 +61,7 @@ async function apiGet(url, accessToken, extraHeaders) {
   }
   if (!res.ok) {
     const msg = (json.error && (json.error.message || json.error)) || `Request failed (${res.status})`
-    throw new Error(typeof msg === 'string' ? msg : 'Request failed')
+    throw new ApiError(typeof msg === 'string' ? msg : 'Request failed', res.status, json)
   }
   return json
 }
@@ -83,7 +92,7 @@ async function apiPost(url, accessToken, body) {
   }
   if (!res.ok) {
     const msg = (json.error && (json.error.message || json.error)) || `Request failed (${res.status})`
-    throw new Error(typeof msg === 'string' ? msg : 'Request failed')
+    throw new ApiError(typeof msg === 'string' ? msg : 'Request failed', res.status, json)
   }
   return json
 }
@@ -223,6 +232,7 @@ async function fetchAsanaTasks(accessToken, workspaceGid) {
 
 module.exports = {
   AuthError,
+  ApiError,
   ThrottledError,
   fetchMicrosoftMe,
   fetchMail,

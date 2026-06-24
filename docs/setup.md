@@ -9,9 +9,11 @@ The app uses OAuth2 authorization-code + **PKCE**. **Microsoft** is a public
 client, so it needs **no client secret at all**. **Asana** is different: its token
 endpoint requires a **client secret even with PKCE**, so you paste your Asana app's
 secret in too — it's sealed in your OS keychain (never the plaintext settings file,
-never the repo). Both providers are requested with **read-only, least-privilege
-scopes** — MailStudio can read your mail, calendar, and assigned tasks for the
-sidebar and notifications, but the tokens cannot send, modify, or delete anything.
+never the repo). Both providers are requested with **least-privilege scopes** —
+MailStudio can read your mail, calendar, and assigned tasks for the sidebar and
+notifications. Microsoft also grants `Presence.ReadWrite` so the Teams status
+control can set or clear your availability. The tokens cannot send mail, edit
+files, modify tasks, or delete anything.
 
 Until you connect an account, a built-in scraper drives the sidebar feeds and
 notifications from the logged-in web views. The moment you connect, the official
@@ -48,7 +50,7 @@ http://localhost/mailstudio-auth
 5. **API permissions** → **+ Add a permission** → **Microsoft Graph** →
    **Delegated permissions** → add all of:
    `openid`, `profile`, `offline_access`, `User.Read`, `Mail.Read`,
-   `Calendars.Read`. If your tenant shows a **Grant admin consent** button,
+   `Calendars.Read`, `Presence.ReadWrite`. If your tenant shows a **Grant admin consent** button,
    click it.
 6. **Authentication** → **Advanced settings** → set **Allow public client flows**
    to **Yes**.

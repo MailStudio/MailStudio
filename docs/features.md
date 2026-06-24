@@ -33,7 +33,7 @@ it**, not in your default browser:
 - Even `target="_blank"` popup links are intercepted and routed
 
 The router recognizes the full constellation of Microsoft hosts —
-`outlook.office.com`, `teams.microsoft.com`, `*.sharepoint.com`,
+`outlook.office.com`, `teams.cloud.microsoft`, `teams.microsoft.com`, `*.sharepoint.com`,
 `onedrive.live.com`, `1drv.ms`, `planner.microsoft.com`, the new
 `*.cloud.microsoft` app hosts, and more — plus `app.asana.com`.
 
@@ -80,6 +80,31 @@ drives them while the app is open). Each feature is independently toggleable:
 - **Per-service snooze** — right-click any sidebar tab to snooze just that service
 - Click a notification to open the exact email or task, not just the app
 
+## Teams status controls
+
+The Settings sidebar includes a Teams status control for connected Microsoft
+accounts. Set yourself Available, Busy, Do Not Disturb, Be Right Back, Away, or
+Offline; choose a duration; or reset the override without opening the full Teams
+UI. This uses Microsoft Graph `Presence.ReadWrite`, while mail and calendar access
+remain read-only.
+
+## Command palette, recents, and diagnostics
+
+Press ⌘K / Ctrl+K to open the command palette. It can switch services, open saved
+workspaces, reopen recent routed links and completed downloads, start or reset the
+focus timer, open the scratchpad, launch page search, jump directly to settings
+pages, and run repair actions for the active service.
+
+The Settings sidebar also includes:
+
+- **Diagnostics** — live provider status, feed source, item counts, last refresh
+  time, last error, snooze, quiet-hours, and hibernation state
+- **Session repair** — reload, force reload, reset home, clear a service session,
+  or open the service externally
+- **Recents** — routed links, clicked feed items, and completed downloads
+- **Import / Export** — portable non-secret settings for moving layouts, pins,
+  workspaces, and preferences between machines
+
 ## Downloads, your way
 
 Files downloaded from any tab funnel through one place: a **Downloads** button in
@@ -93,6 +118,12 @@ file lands, and a notification on completion reveals it in Finder/Explorer.
 Mail next to Calendar, or Asana next to To Do. Drag the divider to resize; the
 split-layout button toggles side-by-side vs. stacked. Click any tab normally to
 return to a single view.
+
+## Workspaces
+
+Save named workspaces for recurring contexts: the visible services, active tab,
+split panes, split orientation, split ratio, sidebar collapse state, and collapse
+mode. Reopen them from Settings or the command palette.
 
 ## Resizable, collapsible sidebar
 
@@ -132,7 +163,8 @@ own icon, and a sidebar slot. Manage, reorder, and remove pins in Settings.
 
 Open Settings from the sidebar to show/hide tabs, enable Office-suite apps, add and
 reorder pinned sites, switch collapse mode, configure notifications and quiet
-hours, and connect Microsoft and Asana accounts (⌘, opens it directly).
+hours, save workspaces, inspect diagnostics, export/import settings, and connect
+Microsoft and Asana accounts (⌘, opens it directly).
 
 ## Always there, never in the way
 

@@ -4,14 +4,16 @@ MailStudio is built on the assumption that it's wrapping powerful, signed-in
 accounts alongside potentially untrusted custom pins — so it's locked down by
 default. To report a vulnerability privately, see [SECURITY.md](../SECURITY.md).
 
-## Read-only, least-privilege access
+## Least-privilege access
 
-Both providers are connected with the **minimum read-only scopes** the features
-need. The tokens cannot send, modify, or delete anything in your accounts.
+Both providers are connected with the **minimum scopes** the features need. Mail,
+calendar, and task access is read-only. Microsoft presence is the one writeable
+scope: it lets MailStudio set or clear your Teams availability from the sidebar.
+The tokens cannot send mail, edit files, change tasks, or delete anything.
 
 | Provider | Scopes requested | Access |
 |---|---|---|
-| Microsoft | `User.Read`, `Mail.Read`, `Calendars.Read` (+ `openid`, `profile`, `offline_access`) | read-only |
+| Microsoft | `User.Read`, `Mail.Read`, `Calendars.Read`, `Presence.ReadWrite` (+ `openid`, `profile`, `offline_access`) | mail/calendar read-only; presence set/reset |
 | Asana | `users:read`, `tasks:read`, `workspaces:read` (+ `openid`, `email`, `profile`) | read-only |
 
 The "New task" / compose actions never use these tokens — they drive each service's
@@ -50,7 +52,7 @@ for the session only and discarded on quit. The token file is written owner-only
 
 - `contextIsolation: true`, `sandbox: true`, `nodeIntegration: false` on every view
 - Suffix-matched allowlist of trusted base domains (microsoft.com, office.com,
-  sharepoint.com, teams.microsoft.com, asana.com, …)
+  cloud.microsoft, sharepoint.com, asana.com, ...)
 - All navigation checked against the allowlist; trusted links route to their owning
   tab in-app, unknown hosts open in the default browser
 - `file://` and `javascript:` navigation blocked — only `http://`, `https://`, and

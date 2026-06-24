@@ -8,8 +8,8 @@ const DEFAULT_SERVICES = [
   {
     key: 'teams',
     label: 'Teams',
-    url: 'https://teams.microsoft.com/',
-    home: 'https://teams.microsoft.com/',
+    url: 'https://teams.cloud.microsoft/',
+    home: 'https://teams.cloud.microsoft/',
     icon: 'teams',
     builtin: true,
     visible: true
@@ -18,7 +18,7 @@ const DEFAULT_SERVICES = [
     key: 'mail',
     label: 'Mail',
     url: 'https://outlook.office.com/mail/',
-    home: 'https://outlook.office.com/mail/',
+    home: 'https://outlook.office.com/mail/inbox',
     icon: 'mail',
     builtin: true,
     visible: true,
@@ -131,6 +131,10 @@ const DEFAULT_SERVICES = [
 
 const DEFAULTS = {
   theme: 'dark',
+  uiDensity: 'comfortable',
+  debugging: {
+    enabled: false
+  },
   collapseMode: 'vanish', // 'vanish' (fully hidden) | 'rail' (icon strip)
   taskProvider: 'microsoft', // where "New task" composes: 'microsoft' (To Do) | 'asana'
   firstBoot: true, // cleared after first successful Microsoft sign-in or skip
@@ -145,6 +149,13 @@ const DEFAULTS = {
     preview: true,
     quietStart: '', // "HH:MM" 24-hour, or '' to disable
     quietEnd: ''
+  },
+  notificationState: {
+    mail: {},
+    asana: { ready: false, ids: [] },
+    calendar: { ids: [] },
+    teams: { ready: false, lastCount: 0 },
+    history: []
   },
   // Bring-your-own OAuth app registrations. clientIds are NOT secrets (PKCE
   // flow), so they live in plain settings; tokens live in the encrypted vault.
@@ -169,6 +180,7 @@ const DEFAULTS = {
   workspaces: [],
   recentItems: [],
   downloadHistory: [],
+  serviceFailureLog: [],
   downloads: {
     rememberHistory: true,
     clearOnQuit: false
@@ -300,6 +312,13 @@ function normalize(raw) {
   if (settings.theme !== 'light' && settings.theme !== 'dark') {
     settings.theme = DEFAULTS.theme
   }
+  if (!['comfortable', 'compact'].includes(settings.uiDensity)) {
+    settings.uiDensity = DEFAULTS.uiDensity
+  }
+  const rawDebugging = (raw && typeof raw.debugging === 'object' && raw.debugging) ? raw.debugging : {}
+  settings.debugging = {
+    enabled: Boolean(rawDebugging.enabled)
+  }
   if (settings.collapseMode !== 'rail' && settings.collapseMode !== 'vanish') {
     settings.collapseMode = DEFAULTS.collapseMode
   }
@@ -375,7 +394,7 @@ function normalize(raw) {
     )
   }
 
-  const cleanRecents = (items) => (Array.isArray(items) ? items : [])
+  const cleanRecents = (items, limit = 50) => (Array.isArray(items) ? items : [])
     .filter((item) => item && typeof item === 'object')
     .map((item) => ({
       id: typeof item.id === 'string' ? item.id.slice(0, 160) : `recent-${Math.abs(hash(JSON.stringify(item))).toString(36)}`,
@@ -384,17 +403,55 @@ function normalize(raw) {
       subtitle: typeof item.subtitle === 'string' ? item.subtitle.slice(0, 220) : '',
       url: typeof item.url === 'string' ? item.url.slice(0, 2000) : '',
       serviceKey: typeof item.serviceKey === 'string' ? item.serviceKey.slice(0, 80) : '',
-      at: typeof item.at === 'number' ? item.at : Date.now()
+      at: typeof item.at === 'number' ? item.at : Date.now(),
+      code: typeof item.code === 'number' ? item.code : 0
     }))
-    .slice(0, 50)
+    .slice(0, limit)
   settings.recentItems = cleanRecents(raw && raw.recentItems)
   settings.downloadHistory = cleanRecents(raw && raw.downloadHistory)
+  settings.serviceFailureLog = cleanRecents(raw && raw.serviceFailureLog, 80)
+  const cleanIdList = (items, limit = 2000) => (Array.isArray(items) ? items : [])
+    .filter((item) => typeof item === 'string' && item)
+    .map((item) => item.slice(0, 240))
+    .slice(0, limit)
+  const rawNotificationState = (raw && typeof raw.notificationState === 'object' && raw.notificationState) ? raw.notificationState : {}
+  const rawMailState = (rawNotificationState.mail && typeof rawNotificationState.mail === 'object') ? rawNotificationState.mail : {}
+  settings.notificationState = {
+    mail: Object.fromEntries(
+      Object.entries(rawMailState)
+        .filter(([key, value]) => typeof key === 'string' && value && typeof value === 'object')
+        .slice(0, 60)
+        .map(([key, value]) => [
+          cleanServiceKey(key),
+          {
+            ready: Boolean(value.ready),
+            lastCount: Math.max(0, Math.min(9999, Number.isFinite(value.lastCount) ? Math.trunc(value.lastCount) : 0)),
+            ids: cleanIdList(value.ids)
+          }
+        ])
+        .filter(([key]) => key)
+    ),
+    asana: {
+      ready: Boolean(rawNotificationState.asana && rawNotificationState.asana.ready),
+      ids: cleanIdList(rawNotificationState.asana && rawNotificationState.asana.ids)
+    },
+    calendar: {
+      ids: cleanIdList(rawNotificationState.calendar && rawNotificationState.calendar.ids)
+    },
+    teams: {
+      ready: Boolean(rawNotificationState.teams && rawNotificationState.teams.ready),
+      lastCount: Math.max(0, Math.min(9999, Number.isFinite(rawNotificationState.teams && rawNotificationState.teams.lastCount) ? Math.trunc(rawNotificationState.teams.lastCount) : 0))
+    },
+    history: cleanRecents(rawNotificationState.history, 120)
+  }
 
   settings.workspaces = (Array.isArray(raw && raw.workspaces) ? raw.workspaces : [])
     .filter((item) => item && typeof item === 'object')
     .map((item) => ({
       id: typeof item.id === 'string' ? item.id.slice(0, 80) : `workspace-${Math.abs(hash(JSON.stringify(item))).toString(36)}`,
       name: typeof item.name === 'string' && item.name.trim() ? item.name.trim().slice(0, 80) : 'Workspace',
+      icon: typeof item.icon === 'string' && /^[A-Za-z0-9]{1,3}$/.test(item.icon.trim()) ? item.icon.trim().slice(0, 3) : '',
+      color: typeof item.color === 'string' && /^#[0-9a-f]{6}$/i.test(item.color) ? item.color.toLowerCase() : '#3b82f6',
       activeServiceKey: typeof item.activeServiceKey === 'string' ? item.activeServiceKey.slice(0, 80) : 'mail',
       splitKeys: Array.isArray(item.splitKeys) ? item.splitKeys.filter((k) => typeof k === 'string').slice(0, 2) : [],
       splitOrientation: item.splitOrientation === 'horizontal' ? 'horizontal' : 'vertical',

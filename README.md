@@ -4,9 +4,9 @@
 
 <p align="center">
   <a href="https://github.com/MailStudio/MailStudio/releases/latest"><img src="https://img.shields.io/badge/download-latest-0f6cbd?style=flat-square" alt="Download latest"></a>
-  <img src="https://img.shields.io/badge/version-0.3.0-1b2128?style=flat-square" alt="Version 0.3.0">
+  <img src="https://img.shields.io/badge/version-0.5.0-1b2128?style=flat-square" alt="Version 0.5.0">
   <img src="https://img.shields.io/badge/platform-macOS%20·%20Windows%20·%20Linux-1b2128?style=flat-square" alt="Platforms">
-  <img src="https://img.shields.io/badge/scopes-read--only-34c759?style=flat-square" alt="Read-only scopes">
+  <img src="https://img.shields.io/badge/scopes-least--privilege-34c759?style=flat-square" alt="Least-privilege scopes">
   <img src="https://img.shields.io/badge/license-MIT-1b2128?style=flat-square" alt="MIT License">
 </p>
 
@@ -30,10 +30,10 @@ sidebar feeds. No browser-tab sprawl. No context switching. One Microsoft sign-i
 
 | Platform | File |
 |---|---|
-| macOS (Apple Silicon) | `MailStudio-0.3.0-arm64.dmg` |
-| Windows | `MailStudio-Setup-0.3.0.exe` |
-| Linux (AppImage) | `MailStudio-0.3.0.AppImage` |
-| Linux (Debian/Ubuntu) | `mailstudio_0.3.0_amd64.deb` |
+| macOS (Apple Silicon) | `MailStudio-0.5.0-arm64.dmg` |
+| Windows | `MailStudio-Setup-0.5.0.exe` |
+| Linux (AppImage) | `MailStudio-0.5.0.AppImage` |
+| Linux (Debian/Ubuntu) | `mailstudio_0.5.0_amd64.deb` |
 
 ---
 
@@ -57,6 +57,8 @@ MailStudio gives them a real desktop home:
 - **Smart link routing** — Microsoft/Asana links open in their owning tab; only truly external links go to your browser
 - **Live sidebar feeds** — unread mail (sender, subject, preview, timestamps), upcoming events, assigned tasks with due dates
 - **Real notifications** — Graph + Asana APIs (or a built-in scraper before you connect), with quiet hours, batching, snooze, and click-to-open
+- **Workspaces & command palette** — save layouts, reopen recents, jump to settings pages, launch repairs, search the active page
+- **Teams status controls** — set availability, duration, Do Not Disturb, Away, or reset status without leaving the app
 - **Split view & resizable sidebar** — two services side by side or stacked; drag the sidebar to any width or collapse it to an icon rail
 - **Focus timer + scratchpad** — a configurable Pomodoro (with a celebratory finish) and notes that survive restarts
 - **Native downloads** — every file uses the OS Save dialog, with a live progress drawer
@@ -73,9 +75,10 @@ MailStudio gives them a real desktop home:
 
 MailStudio assumes it's wrapping powerful, signed-in accounts — so it's locked down:
 
-- **Read-only access.** Microsoft and Asana connect with least-privilege,
-  **read-only** scopes (`Mail.Read`, `Calendars.Read`, Asana `tasks:read`, …). Even
-  if a token leaked, it couldn't send, change, or delete anything.
+- **Least-privilege access.** Microsoft and Asana connect with narrow scopes:
+  mail/calendar/task data is read-only, and Microsoft presence is writeable only
+  so the Teams status control can set or clear your availability. The tokens
+  cannot send mail, edit files, change tasks, or delete anything.
 - **No baked-in secrets, no servers.** OAuth uses PKCE; Microsoft needs no client
   secret at all, and Asana's required client secret is **yours** (from your own app
   registration) — nothing is shipped in the repo. There's **no telemetry and no
@@ -93,7 +96,7 @@ MailStudio assumes it's wrapping powerful, signed-in accounts — so it's locked
 ## Get connected
 
 MailStudio ships with **no API keys** — you bring your own free OAuth app
-registrations (about 5 minutes each, read-only). Until you connect, a built-in
+registrations (about 5 minutes each). Until you connect, a built-in
 scraper drives the feeds; once connected, the official APIs take over.
 
 → **[Step-by-step setup for Microsoft & Asana](docs/setup.md)**

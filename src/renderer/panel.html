@@ -157,6 +157,11 @@
               <span class="set-nav-text"><strong>Diagnostics</strong><small>Notification and feed health</small></span>
               <span class="set-nav-ch"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
             </button>
+            <button class="set-nav-row" data-goto="debugging">
+              <span class="set-nav-ic"><svg viewBox="0 0 24 24"><path d="M8 6h8M8 18h8M10 6v12M14 6v12"/><path d="M4 10h16M4 14h16"/></svg></span>
+              <span class="set-nav-text"><strong>Debugging</strong><small>Failure logs, prewarm, sessions</small></span>
+              <span class="set-nav-ch"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
+            </button>
             <button class="set-nav-row" data-goto="workspaces">
               <span class="set-nav-ic"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 10h16M10 10v9"/></svg></span>
               <span class="set-nav-text"><strong>Workspaces</strong><small>Save and restore layouts</small></span>
@@ -193,6 +198,8 @@
           <div class="set-page" id="set-page-connections" hidden>
             <p class="set-hint">Connect Microsoft (Mail &amp; Calendar) and Asana for live feeds and notifications — recent unread mail and upcoming events fill in automatically. Sign in once — tokens are stored in your OS keychain.</p>
             <div class="conn-cards" id="set-conn-cards"></div>
+            <div class="set-subhead">Setup health</div>
+            <div class="set-list" id="setup-health-list"></div>
             <p class="onboard-foot" id="set-encwarn" hidden>⚠︎ OS encryption is unavailable, so tokens won't persist after you quit.</p>
           </div>
 
@@ -295,6 +302,15 @@
               <input type="radio" name="collapseMode" value="rail" />
               <span><strong>Icon rail</strong><small>Collapses to a thin strip of icons.</small></span>
             </label>
+            <div class="set-subhead">Density</div>
+            <label class="set-radio">
+              <input type="radio" name="uiDensity" value="comfortable" />
+              <span><strong>Comfortable</strong><small>Roomier rows and previews.</small></span>
+            </label>
+            <label class="set-radio">
+              <input type="radio" name="uiDensity" value="compact" />
+              <span><strong>Compact</strong><small>More services and feed items on screen.</small></span>
+            </label>
           </div>
 
           <div class="set-page" id="set-page-diagnostics" hidden>
@@ -303,9 +319,33 @@
             <div class="set-list" id="diagnostics-list"></div>
           </div>
 
+          <div class="set-page" id="set-page-debugging" hidden>
+            <p class="set-hint">Local debugging tools for stability work. Turn this on when you want detailed logs and repair controls.</p>
+            <label class="set-check"><input id="debugging-enabled" type="checkbox" /> <span>Enable debugging tools</span></label>
+            <div class="set-actions">
+              <button class="set-btn" id="repair-microsoft-session" type="button">Repair Microsoft session</button>
+              <button class="set-btn" id="repair-asana-session" type="button">Repair Asana session</button>
+              <button class="set-btn" id="clear-failure-log" type="button">Clear failure log</button>
+              <button class="set-btn" id="export-debug-report" type="button">Export debug report</button>
+            </div>
+            <div class="set-subhead">Tabs</div>
+            <div class="set-list" id="debug-tab-list"></div>
+            <div class="set-subhead">Microsoft auth</div>
+            <div class="set-list" id="debug-auth-list"></div>
+            <div class="set-subhead">Notification audit</div>
+            <div class="set-list" id="debug-notification-list"></div>
+            <div class="set-subhead">Recent failures</div>
+            <div class="set-list" id="debug-failure-list"></div>
+          </div>
+
           <div class="set-page" id="set-page-workspaces" hidden>
             <p class="set-hint">Save your current visible tabs, split view, and sidebar state.</p>
-            <div class="add-row"><input id="workspace-name" class="set-input" type="text" placeholder="Workspace name" /><button id="save-workspace" class="set-btn">Save workspace</button></div>
+            <div class="add-row workspace-save-row">
+              <input id="workspace-icon" class="set-input workspace-icon-input" type="text" maxlength="3" placeholder="Icon" />
+              <input id="workspace-color" class="workspace-color-input" type="color" value="#3b82f6" title="Workspace color" />
+              <input id="workspace-name" class="set-input" type="text" placeholder="Workspace name" />
+              <button id="save-workspace" class="set-btn">Save workspace</button>
+            </div>
             <div class="set-list" id="workspace-list"></div>
           </div>
 
@@ -332,6 +372,7 @@
             <label class="set-check"><input id="download-history-on" type="checkbox" /> <span>Remember completed downloads</span></label>
             <label class="set-check"><input id="download-clear-quit" type="checkbox" /> <span>Clear download history when quitting</span></label>
             <div class="set-actions"><button class="set-btn" id="clear-download-history">Clear download history</button></div>
+            <div class="set-list" id="download-history-list"></div>
           </div>
 
           <div class="set-page" id="set-page-portable" hidden>
@@ -358,16 +399,10 @@
             <span class="focus-time" id="focus-time">30:00</span>
           </div>
           <div class="focus-controls">
-            <div class="focus-top">
-              <span class="focus-label" id="focus-label">Focus</span>
-              <div class="focus-btns">
-                <button class="focus-btn" id="focus-toggle" title="Start / pause">
-                  <svg viewBox="0 0 24 24" class="icon" id="focus-toggle-icon"><path d="M8 5v14l11-7z"/></svg>
-                </button>
-                <button class="focus-btn" id="focus-reset" title="Reset">
-                  <svg viewBox="0 0 24 24" class="icon"><path d="M20 11a8 8 0 1 0-.6 4M20 5v6h-6"/></svg>
-                </button>
-              </div>
+            <div class="focus-presets" aria-label="Focus duration presets">
+              <button class="focus-preset" type="button" data-focus-minutes="15">15m</button>
+              <button class="focus-preset" type="button" data-focus-minutes="30">30m</button>
+              <button class="focus-preset" type="button" data-focus-minutes="60">1hr</button>
             </div>
             <div class="focus-duration">
               <button class="focus-step" id="focus-minus" type="button" title="Less time" tabindex="-1">−</button>
@@ -376,6 +411,14 @@
               <span class="focus-custom-unit">min</span>
               <button class="focus-step" id="focus-plus" type="button" title="More time" tabindex="-1">+</button>
             </div>
+          </div>
+          <div class="focus-btns">
+            <button class="focus-btn" id="focus-toggle" title="Start / pause">
+              <svg viewBox="0 0 24 24" class="icon" id="focus-toggle-icon"><path d="M8 5v14l11-7z"/></svg>
+            </button>
+            <button class="focus-btn" id="focus-reset" title="Reset">
+              <svg viewBox="0 0 24 24" class="icon"><path d="M20 11a8 8 0 1 0-.6 4M20 5v6h-6"/></svg>
+            </button>
           </div>
         </div>
 
@@ -419,6 +462,21 @@
       <div class="split-ghost-pane" id="split-ghost-a"></div>
       <div class="split-ghost-bar" id="split-ghost-bar"></div>
       <div class="split-ghost-pane" id="split-ghost-b"></div>
+    </div>
+
+    <div class="service-recovery" id="service-recovery" hidden>
+      <div class="service-recovery-card">
+        <div class="service-recovery-icon" id="service-recovery-icon"></div>
+        <div class="service-recovery-copy">
+          <strong id="service-recovery-title">Page needs attention</strong>
+          <span id="service-recovery-detail"></span>
+        </div>
+        <div class="service-recovery-actions">
+          <button class="set-btn" id="recovery-reload" type="button">Reload</button>
+          <button class="set-btn" id="recovery-reset" type="button">Reset home</button>
+          <button class="set-btn" id="recovery-browser" type="button">Open browser</button>
+        </div>
+      </div>
     </div>
 
     <!-- Downloads drawer — slides down from the top-right toolbar button -->

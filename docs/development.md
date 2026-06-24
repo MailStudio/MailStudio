@@ -41,7 +41,7 @@ There's also a **Check for Updates…** item in the app menu.
 
 To publish the next update:
 
-1. Bump `version` in `package.json` and push a matching tag (e.g. `v0.3.0`).
+1. Bump `version` in `package.json` and push a matching tag (e.g. `v0.5.0`).
    [`release.yml`](../.github/workflows/release.yml) builds the Windows and Linux
    artifacts plus update metadata (`latest*.yml`) and uploads them to a draft
    GitHub Release. Build the macOS artifact locally with `npm run dist:mac` and

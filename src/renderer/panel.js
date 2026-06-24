@@ -80,6 +80,7 @@ const devOpen = new Set()
 // reset to the root list each time Settings is reopened.
 let settingsPage = 'root'
 let prevSettingsOpen = false
+let pendingSettingsPage = null
 
 function applyTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme)
@@ -349,6 +350,31 @@ function renderServices(snapshot) {
   }
 }
 
+function renderServiceRecovery(snapshot) {
+  const panel = document.getElementById('service-recovery')
+  if (!panel) return
+  const service = (snapshot.services || []).find((s) => s.key === snapshot.activeServiceKey)
+  const health = service && service.health
+  const needsRecovery = Boolean(
+    service &&
+    !snapshot.settingsOpen &&
+    !snapshot.firstBoot &&
+    health &&
+    ['failed', 'blank', 'crashed', 'safe-mode'].includes(health.state)
+  )
+  panel.hidden = !needsRecovery
+  if (!needsRecovery) return
+  const icon = document.getElementById('service-recovery-icon')
+  if (icon) icon.innerHTML = SERVICE_ICONS[service.icon] || SERVICE_ICONS.link
+  const title = document.getElementById('service-recovery-title')
+  if (title) title.textContent = `${service.label} needs attention`
+  const detail = document.getElementById('service-recovery-detail')
+  if (detail) {
+    const code = health.code ? ` (${health.code})` : ''
+    detail.textContent = `${health.message || 'This page did not render normally.'}${code}`
+  }
+}
+
 /* ---------- Settings ---------- */
 function workingServices() {
   // A plain, editable copy of the configured services from the last snapshot.
@@ -370,6 +396,7 @@ function sendSettings(services, collapseMode) {
     type: 'update-settings',
     settings: {
       collapseMode: collapseMode || (latest ? latest.collapseMode : 'vanish'),
+      uiDensity: latest ? latest.uiDensity : 'comfortable',
       notif: latest ? latest.notif : null,
       feedPrefs: latest ? latest.feedPrefs : null,
       downloads: latest ? latest.downloadPrefs : null,
@@ -383,6 +410,7 @@ function sendNotif(notif) {
     type: 'update-settings',
     settings: {
       collapseMode: latest ? latest.collapseMode : 'vanish',
+      uiDensity: latest ? latest.uiDensity : 'comfortable',
       services: workingServices(),
       feedPrefs: latest ? latest.feedPrefs : null,
       downloads: latest ? latest.downloadPrefs : null,
@@ -396,10 +424,12 @@ function sendPrefs(partial) {
     type: 'update-settings',
     settings: {
       collapseMode: latest ? latest.collapseMode : 'vanish',
+      uiDensity: latest ? latest.uiDensity : 'comfortable',
       services: workingServices(),
       notif: latest ? latest.notif : null,
       feedPrefs: { ...((latest && latest.feedPrefs) || {}), ...(partial.feedPrefs || {}) },
       downloads: { ...((latest && latest.downloadPrefs) || {}), ...(partial.downloads || {}) },
+      debugging: { ...((latest && latest.debugging) || {}), ...(partial.debugging || {}) },
       taskProvider: latest ? latest.taskProvider : 'microsoft'
     }
   })
@@ -409,6 +439,9 @@ function renderSettings(snapshot) {
   // Radios
   for (const radio of document.querySelectorAll('input[name="collapseMode"]')) {
     radio.checked = radio.value === snapshot.collapseMode
+  }
+  for (const radio of document.querySelectorAll('input[name="uiDensity"]')) {
+    radio.checked = radio.value === (snapshot.uiDensity || 'comfortable')
   }
   for (const radio of document.querySelectorAll('input[name="taskProvider"]')) {
     radio.checked = radio.value === (snapshot.taskProvider || 'microsoft')
@@ -620,6 +653,7 @@ const PAGE_TITLES = {
   sidebar: 'Sidebar items',
   appearance: 'Sidebar behavior',
   diagnostics: 'Diagnostics',
+  debugging: 'Debugging',
   workspaces: 'Workspaces',
   repair: 'Session repair',
   recents: 'Recents',
@@ -651,22 +685,31 @@ function renderExtendedSettings(snapshot) {
     ['feed-tasks-today', feedPrefs.tasksTodayOnly],
     ['feed-hide-previews', feedPrefs.hidePreviews],
     ['download-history-on', downloadPrefs.rememberHistory !== false],
-    ['download-clear-quit', Boolean(downloadPrefs.clearOnQuit)]
+    ['download-clear-quit', Boolean(downloadPrefs.clearOnQuit)],
+    ['debugging-enabled', Boolean(snapshot.debugging && snapshot.debugging.enabled)]
   ]
   for (const [id, checked] of checks) {
     const el = document.getElementById(id)
     if (el) el.checked = Boolean(checked)
   }
   renderDiagnostics(snapshot)
+  renderDebugging(snapshot)
+  renderSetupHealth(snapshot)
   renderWorkspaces(snapshot)
   renderRepair(snapshot)
   renderRecents(snapshot)
+  renderDownloadHistory(snapshot)
 }
 
 function renderDiagnostics(snapshot) {
   const list = document.getElementById('diagnostics-list')
   if (!list) return
   const diag = snapshot.diagnostics || {}
+  const diagTime = (value) => {
+    if (!value) return 'never'
+    const d = new Date(value)
+    return Number.isNaN(d.getTime()) ? 'unknown' : d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  }
   const rows = [
     ['Quiet hours', diag.quietHoursActive ? 'Active' : 'Inactive'],
     ['Global snooze', diag.globalSnoozed ? 'Active' : 'Inactive'],
@@ -675,9 +718,120 @@ function renderDiagnostics(snapshot) {
   ]
   const serviceRows = (diag.services || []).filter((s) => s.visible).map((s) => [
     s.label,
-    `${s.feedKind ? `${s.feedKind}: ${s.feedState || 'idle'} (${s.feedItems}) · ${s.source || 'web'}` : 'web'}${s.snoozed ? ' · snoozed' : ''}${s.hibernated ? ' · sleeping' : ''}`
+    `${s.feedKind ? `${s.feedKind}: ${s.feedState || 'idle'} (${s.feedItems}) · ${s.source || 'web'} · ${diagTime(s.lastRefreshAt)}` : 'web'}${s.lastError ? ` · ${s.lastError}` : ''}${s.snoozed ? ' · snoozed' : ''}${s.hibernated ? ' · sleeping' : ''}`
   ])
   list.innerHTML = [...rows, ...serviceRows].map(([a, b]) => `<div class="set-list-row"><strong>${escapeHtml(a)}</strong><small>${escapeHtml(b)}</small></div>`).join('')
+}
+
+function renderDebugging(snapshot) {
+  const tabList = document.getElementById('debug-tab-list')
+  const authList = document.getElementById('debug-auth-list')
+  const notificationList = document.getElementById('debug-notification-list')
+  const failureList = document.getElementById('debug-failure-list')
+  if (!tabList || !authList || !notificationList || !failureList) return
+  const diag = snapshot.diagnostics || {}
+  const enabled = Boolean(snapshot.debugging && snapshot.debugging.enabled)
+  for (const id of ['repair-microsoft-session', 'repair-asana-session', 'clear-failure-log', 'export-debug-report']) {
+    const btn = document.getElementById(id)
+    if (btn) btn.disabled = !enabled
+  }
+  if (!enabled) {
+    tabList.innerHTML = '<div class="set-empty">Debugging tools are off.</div>'
+    authList.innerHTML = '<div class="set-empty">Enable debugging to show Microsoft auth events.</div>'
+    notificationList.innerHTML = '<div class="set-empty">Enable debugging to show notification delivery history.</div>'
+    failureList.innerHTML = '<div class="set-empty">Enable debugging to show failure history.</div>'
+    return
+  }
+  const services = (diag.services || []).filter((s) => s.visible)
+  tabList.innerHTML = services.length ? '' : '<div class="set-empty">No visible tabs.</div>'
+  for (const partition of diag.sessionPartitions || []) {
+    const row = document.createElement('div')
+    row.className = 'set-list-row debug-row'
+    row.innerHTML = `<span><strong>${escapeHtml(partition.label)} session</strong><small>${escapeHtml(`${(partition.services || []).length} tabs · ${partition.recentFailures || 0} recent failures`)}</small></span>`
+    tabList.appendChild(row)
+  }
+  for (const service of services) {
+    const row = document.createElement('div')
+    row.className = 'set-list-row debug-row'
+    const parts = [
+      service.visibleState || 'background',
+      service.prewarmState || 'idle',
+      service.hibernated ? 'sleeping' : 'resident',
+      service.stale ? 'stale' : ''
+    ].filter(Boolean)
+    row.innerHTML = `<span><strong>${escapeHtml(service.label)}</strong><small>${escapeHtml(parts.join(' · '))}</small></span>`
+    tabList.appendChild(row)
+  }
+  const auth = diag.microsoftAuth || {}
+  const authRows = []
+  authRows.push(['Primary hint', auth.loginHint || 'none'])
+  authRows.push(['Web session', auth.webSession ? 'authenticated' : 'not confirmed'])
+  for (const state of auth.states || []) {
+    authRows.push([state.label || state.key, `${state.authState || 'unknown'} · ${state.loaded ? 'loaded' : 'not loaded'}${state.href ? ` · ${state.href}` : ''}`])
+  }
+  authList.innerHTML = authRows.map(([a, b]) => `<div class="set-list-row debug-row"><span><strong>${escapeHtml(a)}</strong><small>${escapeHtml(b)}</small></span></div>`).join('')
+  const events = auth.events || []
+  for (const item of events.slice(0, 12)) {
+    const row = document.createElement('div')
+    row.className = 'set-list-row debug-row'
+    const when = item.at ? new Date(item.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''
+    const detail = [when, item.stage, item.prompt, item.oauthError, item.message].filter(Boolean).join(' · ')
+    row.innerHTML = `<span><strong>${escapeHtml(item.type || 'auth event')}</strong><small>${escapeHtml(detail)}</small></span>`
+    authList.appendChild(row)
+  }
+  const notificationDiag = diag.notifications || {}
+  const baseline = notificationDiag.baselines || {}
+  const cooldowns = notificationDiag.cooldowns || []
+  const notifRows = [
+    ['Baselines', `${baseline.mailboxes || 0} mailboxes · ${baseline.mailIds || 0} mail ids · ${baseline.asanaIds || 0} tasks · ${baseline.calendarIds || 0} calendar reminders · Teams ${baseline.teamsReady ? baseline.teamsLastCount || 0 : 'not ready'}`],
+    ['Cooldowns', cooldowns.length ? cooldowns.map((item) => `${item.key} ${Math.ceil((item.remainingMs || 0) / 1000)}s`).join(', ') : 'none']
+  ]
+  notificationList.innerHTML = notifRows.map(([a, b]) => `<div class="set-list-row debug-row"><span><strong>${escapeHtml(a)}</strong><small>${escapeHtml(b)}</small></span></div>`).join('')
+  const notificationHistory = notificationDiag.history || []
+  if (!notificationHistory.length) {
+    notificationList.insertAdjacentHTML('beforeend', '<div class="set-empty">No notification events yet.</div>')
+  }
+  for (const item of notificationHistory.slice(0, 16)) {
+    const row = document.createElement('div')
+    row.className = 'set-list-row debug-row'
+    const when = item.at ? new Date(item.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''
+    row.innerHTML = `<span><strong>${escapeHtml(item.title || item.kind || 'Notification')}</strong><small>${escapeHtml([when, item.kind, item.subtitle].filter(Boolean).join(' · '))}</small></span>`
+    notificationList.appendChild(row)
+  }
+  const failures = diag.serviceFailureLog || []
+  failureList.innerHTML = failures.length ? '' : '<div class="set-empty">No recent service failures.</div>'
+  for (const item of failures.slice(0, 20)) {
+    const row = document.createElement('div')
+    row.className = 'set-list-row debug-row'
+    const when = item.at ? new Date(item.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''
+    row.innerHTML = `<span><strong>${escapeHtml(item.title || 'Failure')}</strong><small>${escapeHtml([when, item.subtitle, item.url].filter(Boolean).join(' · '))}</small></span>`
+    failureList.appendChild(row)
+  }
+}
+
+function renderSetupHealth(snapshot) {
+  const list = document.getElementById('setup-health-list')
+  if (!list) return
+  const health = snapshot.setupHealth || {}
+  const checks = Array.isArray(health.checks) ? health.checks : []
+  list.innerHTML = checks.length ? '' : '<div class="set-empty">No health checks yet.</div>'
+  for (const check of checks) {
+    const row = document.createElement('div')
+    row.className = `set-list-row health-row ${check.ok ? 'ok' : 'attention'}`
+    row.innerHTML = `<span><strong>${escapeHtml(check.label || 'Check')}</strong><small>${escapeHtml(check.detail || '')}</small></span><em>${check.ok ? 'OK' : 'Check'}</em>`
+    if (!check.ok && check.action) {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'set-mini-btn'
+      btn.textContent = check.action === 'connections' ? 'Open' : check.action === 'notifications' ? 'Enable' : 'Review'
+      btn.addEventListener('click', () => {
+        if (check.action === 'notifications') showSetPage('notifications')
+        else if (PAGE_TITLES[check.action]) showSetPage(check.action)
+      })
+      row.appendChild(btn)
+    }
+    list.appendChild(row)
+  }
 }
 
 function renderWorkspaces(snapshot) {
@@ -688,7 +842,10 @@ function renderWorkspaces(snapshot) {
   for (const ws of workspaces) {
     const row = document.createElement('div')
     row.className = 'set-list-row action-row'
-    row.innerHTML = `<span><strong>${escapeHtml(ws.name)}</strong><small>${escapeHtml((ws.splitKeys || []).join(' + ') || ws.activeServiceKey || 'single view')}</small></span>`
+    row.innerHTML = `
+      <span class="workspace-chip" style="--workspace-color:${escapeHtml(ws.color || '#3b82f6')}">${escapeHtml(ws.icon || (ws.name || 'W').slice(0, 1).toUpperCase())}</span>
+      <span><strong>${escapeHtml(ws.name)}</strong><small>${escapeHtml((ws.splitKeys || []).join(' + ') || ws.activeServiceKey || 'single view')}</small></span>
+    `
     const open = document.createElement('button')
     open.className = 'set-mini-btn'
     open.textContent = 'Open'
@@ -697,7 +854,44 @@ function renderWorkspaces(snapshot) {
     del.className = 'set-mini-btn danger'
     del.textContent = 'Delete'
     del.addEventListener('click', () => window.panelApi.sendCommand({ type: 'delete-workspace', id: ws.id }))
-    row.append(open, del)
+    const edit = document.createElement('button')
+    edit.className = 'set-mini-btn'
+    edit.textContent = 'Edit'
+    edit.addEventListener('click', () => {
+      const name = window.prompt('Workspace name', ws.name || '')
+      if (name === null) return
+      const icon = window.prompt('Workspace icon (1-3 letters/numbers)', ws.icon || '')
+      if (icon === null) return
+      const color = window.prompt('Workspace color (#RRGGBB)', ws.color || '#3b82f6')
+      if (color === null) return
+      window.panelApi.sendCommand({ type: 'update-workspace', id: ws.id, name, icon, color })
+    })
+    const dup = document.createElement('button')
+    dup.className = 'set-mini-btn'
+    dup.textContent = 'Duplicate'
+    dup.addEventListener('click', () => window.panelApi.sendCommand({ type: 'duplicate-workspace', id: ws.id }))
+    row.append(open, edit, dup, del)
+    list.appendChild(row)
+  }
+}
+
+function renderDownloadHistory(snapshot) {
+  const list = document.getElementById('download-history-list')
+  if (!list) return
+  const items = snapshot.downloadHistory || []
+  list.innerHTML = items.length ? '' : '<div class="set-empty">No completed downloads in history.</div>'
+  for (const item of items.slice(0, 20)) {
+    const row = document.createElement('div')
+    row.className = 'set-list-row action-row'
+    row.innerHTML = `<span><strong>${escapeHtml(item.title || 'Download')}</strong><small>${escapeHtml(item.subtitle || item.url || '')}</small></span>`
+    const open = document.createElement('button')
+    open.type = 'button'
+    open.className = 'set-mini-btn'
+    open.textContent = 'Open'
+    open.addEventListener('click', () => {
+      if (item.url) window.panelApi.sendCommand({ type: 'open-url', url: item.url })
+    })
+    row.appendChild(open)
     list.appendChild(row)
   }
 }
@@ -779,11 +973,11 @@ function renderNotifSettings(snapshot) {
         : `${(NOTIF_PROVIDER_STATUS[provider] || {}).sub || 'Not connected'} — connect to enable`
     }
   }
-  // A provider is connected but onboarding never finished, so nothing fires.
+  // Notification dispatch is always armed; connections only control which
+  // provider-backed feeds can produce alerts.
   const warn = document.getElementById('notif-arm-warn')
   if (warn) {
-    const anyConnected = PROVIDERS.some((p) => conn[p] && conn[p].status === 'connected')
-    warn.hidden = !(anyConnected && !snapshot.onboarded)
+    warn.hidden = true
   }
 }
 
@@ -918,6 +1112,8 @@ function render(snapshot) {
   document.body.classList.toggle('collapsed', Boolean(snapshot.sidebarCollapsed))
   document.body.classList.toggle('mode-rail', snapshot.collapseMode === 'rail')
   document.body.classList.toggle('mode-vanish', snapshot.collapseMode !== 'rail')
+  document.body.classList.toggle('density-compact', snapshot.uiDensity === 'compact')
+  document.body.classList.toggle('density-comfortable', snapshot.uiDensity !== 'compact')
   document.body.classList.toggle('settings-open', Boolean(snapshot.settingsOpen))
   document.body.classList.toggle('first-boot', Boolean(snapshot.firstBoot))
 
@@ -937,6 +1133,7 @@ function render(snapshot) {
   }
 
   renderServices(snapshot)
+  renderServiceRecovery(snapshot)
   renderSummary(snapshot)
   renderNotifSetup(snapshot)
   renderSplitControls(snapshot)
@@ -964,7 +1161,8 @@ function render(snapshot) {
 
   if (snapshot.settingsOpen) {
     // Reset to the root list each time Settings is (re)opened.
-    if (!prevSettingsOpen) showSetPage('root')
+    if (!prevSettingsOpen) showSetPage(pendingSettingsPage || 'root')
+    pendingSettingsPage = null
     renderSettings(snapshot)
     renderNotifSettings(snapshot)
     renderTeamsPresence(snapshot)
@@ -1329,6 +1527,16 @@ for (const [id, key] of [['download-history-on', 'rememberHistory'], ['download-
   const el = document.getElementById(id)
   if (el) el.addEventListener('change', () => sendPrefs({ downloads: { [key]: el.checked } }))
 }
+const debuggingEnabled = document.getElementById('debugging-enabled')
+if (debuggingEnabled) debuggingEnabled.addEventListener('change', () => sendPrefs({ debugging: { enabled: debuggingEnabled.checked } }))
+const repairMicrosoftSession = document.getElementById('repair-microsoft-session')
+if (repairMicrosoftSession) repairMicrosoftSession.addEventListener('click', () => window.panelApi.sendCommand({ type: 'repair-partition', partition: 'microsoft' }))
+const repairAsanaSession = document.getElementById('repair-asana-session')
+if (repairAsanaSession) repairAsanaSession.addEventListener('click', () => window.panelApi.sendCommand({ type: 'repair-partition', partition: 'asana' }))
+const clearFailureLog = document.getElementById('clear-failure-log')
+if (clearFailureLog) clearFailureLog.addEventListener('click', () => window.panelApi.sendCommand({ type: 'clear-failure-log' }))
+const exportDebugReport = document.getElementById('export-debug-report')
+if (exportDebugReport) exportDebugReport.addEventListener('click', () => window.panelApi.sendCommand({ type: 'export-debug-report' }))
 const testNotification = document.getElementById('test-notification')
 if (testNotification) testNotification.addEventListener('click', () => window.panelApi.sendCommand({ type: 'send-test-notification' }))
 const refreshDiagnostics = document.getElementById('refresh-diagnostics')
@@ -1336,8 +1544,16 @@ if (refreshDiagnostics) refreshDiagnostics.addEventListener('click', () => windo
 const saveWorkspaceBtn = document.getElementById('save-workspace')
 if (saveWorkspaceBtn) saveWorkspaceBtn.addEventListener('click', () => {
   const input = document.getElementById('workspace-name')
-  window.panelApi.sendCommand({ type: 'save-workspace', name: input ? input.value : '' })
+  const icon = document.getElementById('workspace-icon')
+  const color = document.getElementById('workspace-color')
+  window.panelApi.sendCommand({
+    type: 'save-workspace',
+    name: input ? input.value : '',
+    icon: icon ? icon.value : '',
+    color: color ? color.value : ''
+  })
   if (input) input.value = ''
+  if (icon) icon.value = ''
 })
 const clearRecents = document.getElementById('clear-recents')
 if (clearRecents) clearRecents.addEventListener('click', () => window.panelApi.sendCommand({ type: 'clear-recents' }))
@@ -1348,8 +1564,8 @@ if (exportSettings) exportSettings.addEventListener('click', () => window.panelA
 const importSettings = document.getElementById('import-settings')
 if (importSettings) importSettings.addEventListener('click', () => window.panelApi.sendCommand({ type: 'import-settings' }))
 
-// "Notifications not armed" warning: a provider is connected but onboarding
-// never finished — arm them in place.
+// Legacy "Notifications not armed" button: kept harmless for older DOM/tests,
+// but the main process now arms notifications automatically.
 const notifArmBtn = document.getElementById('notif-arm-btn')
 if (notifArmBtn) {
   notifArmBtn.addEventListener('click', () => {
@@ -1368,6 +1584,24 @@ for (const radio of document.querySelectorAll('input[name="collapseMode"]')) {
   })
 }
 
+for (const radio of document.querySelectorAll('input[name="uiDensity"]')) {
+  radio.addEventListener('change', () => {
+    if (!radio.checked) return
+    window.panelApi.sendCommand({
+      type: 'update-settings',
+      settings: {
+        collapseMode: latest ? latest.collapseMode : 'vanish',
+        uiDensity: radio.value,
+        notif: latest ? latest.notif : null,
+        feedPrefs: latest ? latest.feedPrefs : null,
+        downloads: latest ? latest.downloadPrefs : null,
+        services: workingServices(),
+        taskProvider: latest ? latest.taskProvider : 'microsoft'
+      }
+    })
+  })
+}
+
 for (const radio of document.querySelectorAll('input[name="taskProvider"]')) {
   radio.addEventListener('change', () => {
     if (!radio.checked) return
@@ -1375,6 +1609,7 @@ for (const radio of document.querySelectorAll('input[name="taskProvider"]')) {
       type: 'update-settings',
       settings: {
         collapseMode: latest ? latest.collapseMode : 'vanish',
+        uiDensity: latest ? latest.uiDensity : 'comfortable',
         notif: latest ? latest.notif : null,
         feedPrefs: latest ? latest.feedPrefs : null,
         downloads: latest ? latest.downloadPrefs : null,
@@ -1393,6 +1628,14 @@ addUrl.addEventListener('keydown', (e) => {
 for (const button of document.querySelectorAll('[data-command]')) {
   button.addEventListener('click', () => {
     window.panelApi.sendCommand({ type: button.dataset.command })
+  })
+}
+
+for (const [id, action] of [['recovery-reload', 'reload'], ['recovery-reset', 'reset-home'], ['recovery-browser', 'open-external']]) {
+  const btn = document.getElementById(id)
+  if (btn) btn.addEventListener('click', () => {
+    if (!latest || !latest.activeServiceKey) return
+    window.panelApi.sendCommand({ type: 'repair-service', serviceKey: latest.activeServiceKey, action })
   })
 }
 
@@ -1434,6 +1677,7 @@ function paletteCommands() {
     title: title,
     sub: 'Settings',
     run: () => {
+      pendingSettingsPage = key
       window.panelApi.sendCommand({ type: 'open-settings' })
       showSetPage(key)
     }
@@ -1443,13 +1687,41 @@ function paletteCommands() {
     sub: 'Saved workspace',
     run: () => window.panelApi.sendCommand({ type: 'apply-workspace', id: ws.id })
   }))
+  const recents = [...((latest && latest.recentItems) || []), ...((latest && latest.downloadHistory) || [])]
+    .sort((a, b) => (b.at || 0) - (a.at || 0))
+    .slice(0, 8)
+    .map((item) => ({
+      title: `Recent: ${item.title || 'Item'}`,
+      sub: item.subtitle || item.kind || 'Recent item',
+      run: () => {
+        if (item.url) window.panelApi.sendCommand({ type: 'open-url', url: item.url })
+        else if (item.serviceKey) window.panelApi.sendCommand({ type: 'switch-service', serviceKey: item.serviceKey })
+      }
+    }))
+  const activeService = latest && latest.services
+    ? latest.services.find((s) => s.key === latest.activeServiceKey)
+    : null
+  const activeLabel = activeService ? activeService.label : 'current service'
+  const repairActions = activeService ? [
+    { title: `Reload ${activeLabel}`, sub: 'Repair', run: () => window.panelApi.sendCommand({ type: 'repair-service', serviceKey: activeService.key, action: 'reload' }) },
+    { title: `Force reload ${activeLabel}`, sub: 'Repair', run: () => window.panelApi.sendCommand({ type: 'repair-service', serviceKey: activeService.key, action: 'force-reload' }) },
+    { title: `Reset ${activeLabel} home`, sub: 'Repair', run: () => window.panelApi.sendCommand({ type: 'repair-service', serviceKey: activeService.key, action: 'reset-home' }) },
+    { title: `Open ${activeLabel} in browser`, sub: 'Repair', run: () => window.panelApi.sendCommand({ type: 'repair-service', serviceKey: activeService.key, action: 'open-external' }) }
+  ] : []
   return [
     ...services,
     ...workspaces,
+    ...recents,
     { title: 'Refresh feeds', sub: 'Action', run: () => window.panelApi.sendCommand({ type: 'refresh-feeds' }) },
+    { title: 'Find in current page', sub: 'Action', run: openSearch },
     { title: 'Snooze all notifications', sub: 'Action', run: () => window.panelApi.sendCommand({ type: 'global-snooze-menu' }) },
-    { title: 'Open settings', sub: 'Action', run: () => window.panelApi.sendCommand({ type: 'open-settings' }) },
+    { title: 'Open settings', sub: 'Action', run: () => { pendingSettingsPage = null; window.panelApi.sendCommand({ type: 'open-settings' }) } },
     { title: 'Open downloads', sub: 'Action', run: () => setDownloadsDrawerOpen(true) },
+    { title: focusRunning ? 'Pause focus timer' : 'Start focus timer', sub: 'Focus', run: toggleFocusTimer },
+    { title: 'Reset focus timer', sub: 'Focus', run: resetFocusTimer },
+    { title: 'Open scratchpad', sub: 'Focus', run: openScratchpad },
+    { title: 'Teams status', sub: 'Action', run: () => setTeamsPresencePopoverOpen(true) },
+    ...repairActions,
     { title: 'Show keyboard shortcuts', sub: 'Help', run: openShortcutGuide },
     ...pages
   ]
@@ -1465,7 +1737,8 @@ function renderPalette() {
     row.type = 'button'
     row.className = 'command-row'
     row.innerHTML = `<strong>${escapeHtml(cmd.title)}</strong><small>${escapeHtml(cmd.sub)}</small>`
-    row.addEventListener('click', () => {
+    row.addEventListener('click', (event) => {
+      event.stopPropagation()
       closeCommandPalette()
       cmd.run()
     })
@@ -1667,9 +1940,9 @@ function renderDownloads({ list, activeCount }) {
     } else if (dl.state === 'completed') {
       metaText = `${formatBytes(dl.totalBytes)} · Done`
     } else if (dl.state === 'cancelled') {
-      metaText = 'Cancelled'
+      metaText = dl.errorMessage || 'Cancelled'
     } else {
-      metaText = 'Failed'
+      metaText = dl.errorMessage || 'Failed'
     }
 
     const item = document.createElement('div')
@@ -1699,6 +1972,10 @@ function renderDownloads({ list, activeCount }) {
         ${dl.state === 'progressing' ? `
           <button class="dl-act danger" data-action="cancel" data-id="${dl.id}" title="Cancel">
             <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>` : ''}
+        ${dl.retryable ? `
+          <button class="dl-act" data-action="retry" data-id="${dl.id}" title="Retry download">
+            <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-.6 4M20 5v6h-6"/></svg>
           </button>` : ''}
       </div>
     `
@@ -1808,13 +2085,12 @@ const PROVIDERS = ['microsoft', 'asana']
 
 const onboardOverlay = document.getElementById('onboard-overlay')
 
-// Light "Set up notifications" nudge below the compose buttons. Shown only
-// until the user finishes onboarding or skips it.
+// The old arming nudge is retired: notifications are always armed. Provider
+// connection setup remains available in Settings > Connections.
 function renderNotifSetup(snapshot) {
   const el = document.getElementById('notif-setup')
   if (!el) return
-  const show = !snapshot.onboarded && !snapshot.notifSetupSkipped
-  el.hidden = !show
+  el.hidden = true
 }
 
 // Render the provider cards into a container (the onboarding sheet OR the
@@ -2184,7 +2460,6 @@ function spawnBurst() {
 const PLAY_ICON = '<path d="M8 5v14l11-7z"/>'
 const PAUSE_ICON = '<path d="M8 5h3v14H8zM13 5h3v14h-3z"/>'
 const focusTimeEl = document.getElementById('focus-time')
-const focusLabelEl = document.getElementById('focus-label')
 const focusProg = document.getElementById('focus-prog')
 const focusToggleIcon = document.getElementById('focus-toggle-icon')
 const RING_CIRC = 2 * Math.PI * 19
@@ -2206,8 +2481,14 @@ function paintFocus() {
   const frac = 1 - focusRemaining / focusTotal
   focusProg.style.strokeDashoffset = String(RING_CIRC * (1 - frac))
   focusToggleIcon.innerHTML = focusRunning ? PAUSE_ICON : PLAY_ICON
-  focusLabelEl.textContent = focusRemaining === 0 ? 'Done!' : focusRunning ? 'Focusing' : focusRemaining === focusTotal ? 'Focus' : 'Paused'
-  document.getElementById('focus').classList.toggle('running', focusRunning)
+  const focusEl = document.getElementById('focus')
+  const remainingRatio = focusTotal > 0 ? focusRemaining / focusTotal : 0
+  const urgent = focusRunning && focusRemaining > 0 && remainingRatio <= 0.1
+  const warning = focusRunning && !urgent && remainingRatio <= 0.2
+  focusEl.classList.toggle('running', focusRunning)
+  focusEl.classList.toggle('warning', warning)
+  focusEl.classList.toggle('urgent', urgent)
+  focusEl.classList.toggle('done', focusRemaining === 0)
   // Keep the duration input in sync with the current session length (unless the
   // user is mid-edit). It's the only duration control, so the row always fits
   // any sidebar width. Disabled while running so the countdown isn't edited live.
@@ -2219,6 +2500,12 @@ function paintFocus() {
   for (const id of ['focus-minus', 'focus-plus']) {
     const b = document.getElementById(id)
     if (b) b.disabled = focusRunning
+  }
+  const totalMinutes = Math.round(focusTotal / 60)
+  for (const preset of document.querySelectorAll('[data-focus-minutes]')) {
+    const mins = Number(preset.dataset.focusMinutes)
+    preset.classList.toggle('active', mins === totalMinutes)
+    preset.disabled = focusRunning
   }
 }
 
@@ -2234,7 +2521,7 @@ function tickFocus() {
   paintFocus()
 }
 
-document.getElementById('focus-toggle').addEventListener('click', () => {
+function toggleFocusTimer() {
   focusRunning = !focusRunning
   if (focusRunning) {
     if (focusRemaining === 0) focusRemaining = focusTotal
@@ -2244,13 +2531,17 @@ document.getElementById('focus-toggle').addEventListener('click', () => {
     clearInterval(focusInterval)
   }
   paintFocus()
-})
-document.getElementById('focus-reset').addEventListener('click', () => {
+}
+
+function resetFocusTimer() {
   focusRunning = false
   clearInterval(focusInterval)
   focusRemaining = focusTotal
   paintFocus()
-})
+}
+
+document.getElementById('focus-toggle').addEventListener('click', toggleFocusTimer)
+document.getElementById('focus-reset').addEventListener('click', resetFocusTimer)
 // Set the session length to a given minute count (clamped), resetting the timer.
 function setFocusMinutes(mins) {
   const clamped = Math.max(FOCUS_MIN_MINUTES, Math.min(FOCUS_MAX_MINUTES, Math.round(mins)))
@@ -2288,6 +2579,13 @@ if (focusPlus) focusPlus.addEventListener('click', () => {
   const cur = Math.round(focusTotal / 60)
   setFocusMinutes((Math.floor(cur / 5) + 1) * 5)
 })
+for (const preset of document.querySelectorAll('[data-focus-minutes]')) {
+  preset.addEventListener('click', () => {
+    if (focusRunning) return
+    const mins = Number(preset.dataset.focusMinutes)
+    if (Number.isFinite(mins)) setFocusMinutes(mins)
+  })
+}
 
 paintFocus()
 
@@ -2309,6 +2607,21 @@ if (toolsTab && toolsDrawer) {
 }
 
 /* ---------- Scratch pad ---------- */
+function setToolsOpen(open) {
+  if (!toolsDrawer || !toolsTab) return
+  toolsDrawer.classList.toggle('open', Boolean(open))
+  localStorage.setItem('mailstudio-tools-open', open ? '1' : '')
+  toolsTab.setAttribute('aria-expanded', open ? 'true' : 'false')
+  toolsTab.setAttribute('aria-controls', 'tools-drawer')
+}
+
+function openScratchpad() {
+  setToolsOpen(true)
+  scratchArea.hidden = false
+  document.getElementById('scratch-chevron').style.transform = 'rotate(180deg)'
+  scratchArea.focus()
+}
+
 document.getElementById('scratch-toggle').addEventListener('click', () => {
   const open = scratchArea.hidden
   scratchArea.hidden = !open
@@ -2340,4 +2653,7 @@ window.panelApi.getSnapshot().then(render)
 /* ---------- Network reconnect ---------- */
 window.addEventListener('online', () => {
   window.panelApi.sendCommand({ type: 'network-online' })
+})
+window.addEventListener('offline', () => {
+  window.panelApi.sendCommand({ type: 'network-offline' })
 })

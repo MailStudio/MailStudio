@@ -1,6 +1,6 @@
 {
   "name": "mailstudio",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Secure Outlook web wrapper with tray notifications, calendar, tasks, and Asana.",
   "main": "src/main/main.js",
   "scripts": {
@@ -10,9 +10,10 @@
     "dist:mac": "electron-builder --mac",
     "dist:dir": "electron-builder --dir",
     "release": "npm run check && npm test && electron-builder --publish always",
-    "check": "node --check src/main/main.js && node --check src/main/settings-store.js && node --check src/main/service-preload.js && node --check src/main/panel-preload.js && node --check src/main/secure-store.js && node --check src/main/oauth.js && node --check src/main/api-feeds.js && node --check src/main/connections.js && node --check src/main/updater.js && node --check src/renderer/panel.js && node --check src/renderer/menu.js && node --check scripts/after-pack.js && node --check tooling/qa/make-panel-browser-harness.js && node --check tooling/qa/npm-simulator.test.js && node --check tooling/qa/live-cdp-check.js && node --check tooling/qa/live-nav-sweep.js",
+    "check": "node --check src/main/main.js && node --check src/main/settings-store.js && node --check src/main/service-preload.js && node --check src/main/panel-preload.js && node --check src/main/secure-store.js && node --check src/main/oauth.js && node --check src/main/api-feeds.js && node --check src/main/connections.js && node --check src/main/updater.js && node --check src/renderer/panel.js && node --check src/renderer/menu.js && node --check scripts/after-pack.js && node --check tooling/qa/make-panel-browser-harness.js && node --check tooling/qa/npm-simulator.test.js && node --check tooling/qa/live-cdp-check.js && node --check tooling/qa/live-nav-sweep.js && node --check tooling/qa/deep-panel-behavior.electron.js",
     "test": "node --test test/settings-store.test.js tooling/qa/full-regression.test.js tooling/qa/npm-simulator.test.js",
-    "qa:simulator": "node --test tooling/qa/npm-simulator.test.js"
+    "qa:simulator": "node --test tooling/qa/npm-simulator.test.js",
+    "qa:deep": "node tooling/qa/make-panel-browser-harness.js && electron tooling/qa/deep-panel-behavior.electron.js"
   },
   "repository": {
     "type": "git",

@@ -34,6 +34,7 @@ let config = {
   asana: { clientId: '' }
 }
 let onChange = () => {}
+let onAuthEvent = () => {}
 let partitionForProvider = () => 'persist:mailstudio'
 
 function setStatus(provider, status, extra) {
@@ -63,10 +64,11 @@ function normalizeConfig(raw) {
 // Restore connection state from the encrypted vault on launch: a stored token
 // means we start "connected" (optimistically) and let the first refresh/feed
 // call correct us to 'error' if the grant was revoked.
-function init({ config: cfg, partitionForProvider: partitionResolver, onChange: cb }) {
+function init({ config: cfg, partitionForProvider: partitionResolver, onChange: cb, onAuthEvent: authCb }) {
   config = normalizeConfig(cfg)
   if (typeof partitionResolver === 'function') partitionForProvider = partitionResolver
   if (typeof cb === 'function') onChange = cb
+  if (typeof authCb === 'function') onAuthEvent = authCb
 
   for (const provider of Object.keys(state)) {
     const token = secureStore.getToken(provider)
@@ -145,7 +147,86 @@ function feedIsLive(feedKind) {
 }
 
 /* ---------- OAuth lifecycle ---------- */
-async function connect(provider, { parentWindow } = {}) {
+function emitAuthEvent(provider, type, detail = {}) {
+  try {
+    onAuthEvent({ provider, type, ...detail })
+  } catch {
+    /* ignore listener errors */
+  }
+}
+
+function cleanLoginHint(value) {
+  const hint = typeof value === 'string' ? value.trim().toLowerCase() : ''
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(hint) ? hint : ''
+}
+
+const SILENT_FALLBACK_AUTH_ERRORS = new Set([
+  'login_required',
+  'interaction_required',
+  'consent_required',
+  'account_selection_required',
+  'silent_timeout'
+])
+
+function shouldFallbackFromSilent(err) {
+  if (err instanceof oauth.AuthorizationError) {
+    return !err.oauthError || SILENT_FALLBACK_AUTH_ERRORS.has(err.oauthError)
+  }
+  return false
+}
+
+async function authorizeOnce(provider, { parentWindow, prompt, loginHint, stage }) {
+  const tokenSet = await oauth.authorize({
+    provider,
+    clientId: config[provider].clientId,
+    clientSecret: provider === 'asana' ? secureStore.getSecret('asana') : undefined,
+    tenant: provider === 'microsoft' ? config.microsoft.tenant : undefined,
+    partition: partitionForProvider(provider),
+    parentWindow,
+    prompt,
+    loginHint,
+    onEvent: (event) => emitAuthEvent(provider, event.type, { ...event, stage })
+  })
+  emitAuthEvent(provider, 'authorized', { stage, prompt: prompt || 'default', loginHint: loginHint || '' })
+  return tokenSet
+}
+
+async function authorizeProvider(provider, options) {
+  const loginHint = provider === 'microsoft' ? cleanLoginHint(options.loginHint) : ''
+  if (provider !== 'microsoft') {
+    return authorizeOnce(provider, { ...options, stage: 'interactive' })
+  }
+
+  // First try the existing Microsoft web session without showing UI. If it
+  // needs interaction or consent, fall back to a visible flow.
+  try {
+    return await authorizeOnce(provider, {
+      ...options,
+      prompt: 'none',
+      loginHint,
+      stage: 'silent'
+    })
+  } catch (err) {
+    emitAuthEvent(provider, 'silent-failed', {
+      stage: 'silent',
+      oauthError: err && err.oauthError ? err.oauthError : '',
+      message: err && err.message ? err.message : ''
+    })
+    if (!shouldFallbackFromSilent(err)) throw err
+  }
+
+  return authorizeOnce(provider, {
+    ...options,
+    // With a known account, omit prompt so Microsoft can reuse the hinted SSO
+    // session. Without one, select_account still protects against wrong-tenant
+    // reuse.
+    prompt: loginHint ? '' : 'select_account',
+    loginHint,
+    stage: loginHint ? 'hinted-interactive' : 'account-picker'
+  })
+}
+
+async function connect(provider, { parentWindow, loginHint } = {}) {
   if (!oauth.isProvider(provider)) {
     throw new Error(`Unknown provider: ${provider}`)
   }
@@ -159,14 +240,7 @@ async function connect(provider, { parentWindow } = {}) {
   }
   setStatus(provider, STATUS.CONNECTING, { error: null })
   try {
-    const tokenSet = await oauth.authorize({
-      provider,
-      clientId: config[provider].clientId,
-      clientSecret: provider === 'asana' ? secureStore.getSecret('asana') : undefined,
-      tenant: provider === 'microsoft' ? config.microsoft.tenant : undefined,
-      partition: partitionForProvider(provider),
-      parentWindow
-    })
+    const tokenSet = await authorizeProvider(provider, { parentWindow, loginHint })
     const account = await loadAccount(provider, tokenSet)
     tokenSet.account = account
     secureStore.setToken(provider, tokenSet)
@@ -479,25 +553,47 @@ async function clearTeamsPreferredPresence() {
 async function getAsanaFeed() {
   const token = secureStore.getToken('asana')
   let workspaceGid = token && token.account ? token.account.workspaceGid : null
-  return withToken('asana', async (t) => {
-    if (!workspaceGid) {
-      // Connect-time fetchAsanaMe failed, so the stored account never got its
-      // workspace gid — recover it lazily and persist so the UI gets a name.
-      const me = await apiFeeds.fetchAsanaMe(t)
-      if (!me.workspaceGid) {
-        return { state: 'error', items: [] }
+  try {
+    return await withToken('asana', async (t) => {
+      if (!workspaceGid) {
+        // Connect-time fetchAsanaMe failed, so the stored account never got its
+        // workspace gid — recover it lazily and persist so the UI gets a name.
+        const me = await apiFeeds.fetchAsanaMe(t)
+        if (!me.workspaceGid) {
+          return {
+            state: 'error',
+            items: [],
+            error: 'Asana did not return an accessible workspace. If a trial or workspace access changed, reconnect Asana or use the web tab fallback.'
+          }
+        }
+        workspaceGid = me.workspaceGid
+        // Re-read the vault entry: the refresh above may have rotated the tokenSet.
+        const fresh = secureStore.getToken('asana')
+        if (fresh) {
+          const account = { ...(fresh.account || {}), name: me.name, workspaceGid: me.workspaceGid }
+          secureStore.setToken('asana', { ...fresh, account })
+          setStatus('asana', state.asana.status, { account })
+        }
       }
-      workspaceGid = me.workspaceGid
-      // Re-read the vault entry: the refresh above may have rotated the tokenSet.
-      const fresh = secureStore.getToken('asana')
-      if (fresh) {
-        const account = { ...(fresh.account || {}), name: me.name, workspaceGid: me.workspaceGid }
-        secureStore.setToken('asana', { ...fresh, account })
-        setStatus('asana', state.asana.status, { account })
-      }
+      return apiFeeds.fetchAsanaTasks(t, workspaceGid)
+    })
+  } catch (err) {
+    const status = err && typeof err.status === 'number' ? err.status : 0
+    let message = (err && err.message) || 'Asana API refresh failed'
+    if (status === 402 || status === 403) {
+      message = 'Asana API task access is blocked. If a trial or workspace permission changed, the web tab can still be used while API notifications pause.'
+    } else if (/abort|timeout/i.test(message) || (err && /Abort|Timeout/i.test(err.name || ''))) {
+      message = 'Asana API timed out. MailStudio will use the web tab fallback when available.'
+    } else if (status >= 500) {
+      message = 'Asana API is temporarily unavailable. MailStudio will retry with backoff.'
     }
-    return apiFeeds.fetchAsanaTasks(t, workspaceGid)
-  })
+    return {
+      state: 'error',
+      items: [],
+      error: message,
+      status
+    }
+  }
 }
 
 // kind → its accessor, so main.js can fetch generically. Returns null (keep
